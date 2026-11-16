@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ipaklink-analytics"
+version = "0.1.0"
+description = "Independent event tracking backend for ipaklink"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
+    "pydantic-settings>=2.8,<3",
+    "psycopg[binary,pool]>=3.2,<4",
+    "redis>=5.2,<8",
+    "confluent-kafka>=2.8,<3",
+    "clickhouse-connect>=0.8,<2",
+    "pymongo>=4.11,<5",
+]
+
+[project.optional-dependencies]
+test = ["httpx>=0.28,<1", "pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"ipaklink_analytics.infrastructure.postgres" = ["migrations/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
