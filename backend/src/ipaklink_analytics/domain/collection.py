@@ -12,6 +12,7 @@ class CollectionPolicy(BaseModel):
     rollout_percent: int = Field(default=100, ge=0, le=100)
     platforms: list[Literal["android", "ios"]] = Field(default_factory=list)
     app_versions: list[str] = Field(default_factory=list)
+    enabled_event_names: list[str] | None = None
     max_batch_size: int = Field(default=100, ge=1, le=100)
     max_batch_bytes: int = Field(default=262144, ge=1, le=262144)
     max_age_seconds: int = Field(default=604800, ge=1, le=604800)

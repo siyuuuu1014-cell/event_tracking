@@ -65,6 +65,8 @@ GET   /internal/analytics/collection-policies/{policyVersion}            IPK_ANL
 ### 1.6 访问管理
 
 ```text
+POST   /internal/analytics/sessions                                      IPK_ANL_46  内部账号登录
+DELETE /internal/analytics/sessions/current                              IPK_ANL_47  退出后台
 GET   /internal/analytics/access-grants                                  IPK_ANL_35  授权列表
 POST  /internal/analytics/access-grants                                  IPK_ANL_36  创建授权
 PUT   /internal/analytics/access-grants/{grantId}/status                 IPK_ANL_37  撤销授权
@@ -88,6 +90,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 - **GET** 读取资源，路径字段替换占位符，查询字段放 URL query，请求体为空。GET 详情的 Request JSON 用 `path`、`query` 表达字段位置，前端可以据此写 Mock 路由。
 - **POST** 接收批次、创建任务或新资源。保留原采集 action `/events/report` 和既有业务路由。对新增持久草稿与授权资源使用 201，异步导出和语料作业使用 202，既有修复作业保留 200 并在 data 里返回 `queued`。客户端依据状态枚举轮询。
 - **PUT** 替换已有资源的子状态或当前指针，提供必要期望版本。目标不存在为 404，冲突为 409。重复置位按各接口的规则返回已存在结果。同一动作发生过后再重试，不重复落业务事实或执行状态转换。
+- **DELETE** 撤销当前后台会话，重复退出仍返回 200。
 - 各接口示例里的 `headers`、`path`、`query`、`body` 是展示结构。实际请求按对应位置发出。例如 Request JSON 中 `headers.Idempotency-Key` 发作真实头，只有 `body` 对象序列化为 JSON 请求体。
 
 方法语义与状态码依据 [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html)。
@@ -95,7 +98,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 ### 2.2 命名、身份与字段类型
 
 - JSON 键、query 及 path 参数统一 **camelCase**。枚举如业务 `eventName` 的 `screen_view` 是既有字符串值，数据库列用 snake_case，由服务映射。HTTP 标准头保留连字符。
-- 普通后台请求使用 `Authorization: Bearer <SSO token>`，页面按角色授权。内部角色认证有效但没有范围或工单权限时返回 403。匿名上报传 `X-Analytics-Token`，登录上报用 Bearer，二者互斥。所有响应返回 `X-Request-Id`，诊断可据此关联。
+- 普通后台请求携带登录写入的后台会话 Cookie，后端按角色和数据范围授权。会话失效返回 401，已登录但缺少范围或工单权限时返回 403。后台状态变更校验请求来源。匿名上报传 `X-Analytics-Token`，登录上报用 Bearer，二者互斥。所有响应返回 `X-Request-Id`，诊断可据此关联。
 - `!` 为必填，`?` 为可省。可空字段在对应场景标明；数字为 JSON 数字，Kafka 大 offset 为十进制字符串。错误和状态值使用稳定代码，客户端自行本地化。
 - 日期为 `YYYY-MM-DD`，统计时区固定 `Asia/Tashkent`，`fromDate` 含、`toDate` 不含。报表默认最近 7 个完整业务日，通常最长 90 天，接口明细可缩短。若提供一端日期须同时提供另一端。时间戳为 UTC RFC3339，时长为毫秒，比例为 0–1。
 
@@ -743,7 +746,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** feature=search/chat/translate/favorite。search 支持 groupBy=scope/errorCode/appVersion；chat 支持 entrySource/appVersion；translate 支持 mode/languagePair/errorCode/appVersion；favorite 支持 appVersion。errorCode 仅 search/translate 可用并约束至错误码下钻。无 groupBy 时 list=[]、total=0。分页单位为返回的 groupKey + metricCode 行；UI 按组合并展示。coverageStartDate 是该功能真实采集启用日，未知返回 null。
+**校验与渲染** feature=search/chat/translate/favorite。search 支持 groupBy=scope/errorCode/appVersion；chat 支持 entrySource/appVersion；translate 支持 mode/languagePair/errorCode/appVersion；favorite 支持 appVersion。errorCode 仅 search/translate 可用并约束至错误码下钻。搜索打开率 searchOpenRate 的分母为首屏成功且有结果的搜索，分子为 15 分钟内至少打开一次结果的搜索。翻译耗时 P95 只统计成功任务。翻译的汇总和日趋势还可返回 `translateSyncFailureRate`，按报告区间或业务日内每条记录的最新同步结果求失败占比。记录同步事件没有语言对和错误码，带这类筛选的请求省略同步指标。聊天汇总可返回 chatReplyRate24h 和 chatReplyP50Ms，收藏分析可返回 favoriteAdded、favoriteRemoved、favoriteActors。无 groupBy 时 list=[]、total=0。分页单位为返回的 groupKey + metricCode 行；UI 按组合并展示。coverageStartDate 是该功能真实采集启用日，未知返回 null。
 
 #### 3.2.5 IPK_ANL_14 固定漏斗
 
@@ -1062,7 +1065,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** placementCode 按事件注册表，首版提案 homeRecommendation/searchResults；targetType=company/product；groupBy=placement/targetType，默认 placement。ctr=clickedImpressions/impressions，无分母为空。同 impressionId 的多次点击只计一个已点击曝光。阈值见 §6.3。
+**校验与渲染** placementCode 按事件注册表，当前允许 homeRecommendation/searchResults；targetType=company/product；groupBy=placement/targetType，默认 placement。ctr=clickedImpressions/impressions，无分母为空。同一曝光的多次点击只计一次。分组去重主体少于 20 时，impressions、clickedImpressions、ctr 为 null，status 为 suppressed。采集阈值见 §6.3。
 
 #### 3.3.2 IPK_ANL_24 创建导出作业
 
@@ -1251,7 +1254,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** granularity=day/minute，默认 day；day 最大 31 天，minute 最大一个业务日。source=app/server，可不传。series 按 UTC 时间升序，日桶是业务日边界对应的 UTC。list 分页仅作用于对账行，delta=warehouseCount-sourceCount。lagRecords 聚合取最新样本；延迟 P95 以样本计算。
+**校验与渲染** granularity=day/minute，默认 day；已发布采集回执与入仓事件用于计算受理量、延迟和 App 事件对账。拒绝、重复、限流、重试和死信按采样时间汇总。Kafka 位点不能按平台或版本拆分，这些筛选下 lagRecords、stalePartitions 返回 null。历史时间窗无可用观测时返回 null。day 最大 31 天，minute 最大一个业务日。source=app/server，可不传。series 按 UTC 时间升序，日桶是业务日边界对应的 UTC。list 分页仅作用于对账行，delta=warehouseCount-sourceCount。lagRecords 聚合取最新样本；延迟 P95 以样本计算。
 
 #### 3.4.2 IPK_ANL_21 创建修复作业
 
@@ -2063,7 +2066,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
     "list": [
       {
         "grantId": "3030e190-a030-4bba-9cec-057d5f419f04",
-        "principalId": "sso_01",
+        "principalId": "acct_01",
         "roleCode": "operator",
         "regionIds": [
           1
@@ -2107,7 +2110,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
     "Idempotency-Key": "grant-001"
   },
   "body": {
-    "principalId": "sso_01",
+    "principalId": "acct_01",
     "roleCode": "operator",
     "regionIds": [
       1
@@ -2133,7 +2136,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** roleCode 必须存在且操作者可授予，ticketId 须有效。expiresAt 可为空或未来 UTC 时间。使用 Idempotency-Key；相同键同内容返回原资源，异内容 409。 授权创建的幂等键与请求摘要须在授权事务内持久化，不能只依赖缓存。
+**校验与渲染** 平台管理员可为有效账号授予 operator 或 analyst。ticketId 须匹配该管理员的有效工单授权。至少指定一个区域或数据集。expiresAt 可为空或未来 UTC 时间。使用 Idempotency-Key；相同键同内容返回原资源，异内容 409。 授权创建的幂等键与请求摘要与授权一起写入 PostgreSQL 的 analytics_access_grant_request。
 
 #### 3.6.3 IPK_ANL_37 撤销授权
 
@@ -2180,7 +2183,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** status 只接受 revoked，不能通过改状态恢复；需要恢复时新建授权。重复撤销保持原 revokedAt。权限检查与审计绑定同次操作。
+**校验与渲染** status 只接受 revoked，不能通过改状态恢复；需要恢复时新建授权。重复撤销保持原 revokedAt。仅撤销 operator 或 analyst 授权，权限检查与审计绑定同次操作。
 
 #### 3.6.4 IPK_ANL_38 审计记录
 
@@ -2219,7 +2222,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
     "list": [
       {
         "auditId": "3030e190-a030-4bba-9cec-057d5f419f05",
-        "operatorId": "sso_01",
+        "operatorId": "acct_01",
         "action": "snapshotRollback",
         "ticketId": "OPS-127",
         "resultCode": "ok",
@@ -2235,6 +2238,35 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 ```
 
 **校验与渲染** 日期按 occurredAt 的业务日，最长 31 天。按时间倒序再按审计 ID，requestId 用于联调追踪。仅返回安全作用域数据。
+
+#### 3.6.5 IPK_ANL_46 登录并创建后台会话
+
+|契约项|内容|
+|---|---|
+|接口编号|IPK_ANL_46|
+|功能名称|内部账号登录|
+|功能描述|验证内部账号和密码，建立有过期时间的后台会话。|
+|URL|`/ipaklink/v1/internal/analytics/sessions`|
+|Method|POST|
+|Request JSON|`{"username":"li.ming","password":"<员工输入的密码>"}`|
+|Response JSON|`{"code":201,"message":"ok","data":{"accountId":"acct_01","displayName":"李明","expiresAt":"2026-11-16T12:00:00Z"}}`|
+|响应头|`Set-Cookie` 写入后台会话，正式环境使用 HttpOnly、Secure、SameSite=Strict。|
+|功能编号|ADM-03|
+|异常|400 字段缺失；401 登录失败，用户名不存在、密码错误和账号停用统一返回 `{"code":401,"message":"analytics.unauthenticated","data":null}`；429 触发登录限流；503 依赖不可用。|
+
+#### 3.6.6 IPK_ANL_47 退出并撤销后台会话
+
+|契约项|内容|
+|---|---|
+|接口编号|IPK_ANL_47|
+|功能名称|退出后台|
+|功能描述|删除 Redis 会话并清除会话 Cookie。重复退出返回 200。|
+|URL|`/ipaklink/v1/internal/analytics/sessions/current`|
+|Method|DELETE|
+|Request JSON|无请求体。浏览器自动携带会话 Cookie。|
+|Response JSON|`{"code":200,"message":"ok","data":null}`|
+|功能编号|ADM-03|
+|异常|403 请求来源校验失败；503 会话存储不可用。|
 
 ### 3.7 语料治理
 
@@ -2351,7 +2383,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** type=import/reviewSync/erase；作业状态见 §2.4。queued/running 的 finishedAt 和 errorCode 为空。按数据集授权访问并落审计。
+**校验与渲染** type=import/reviewSync/erase；reviewSync 由内部作业入口排队，按 ANL_41 的状态及版本规则逐条处理，结果通过本接口查看。作业状态见 §2.4。queued/running 的 finishedAt 和 errorCode 为空。按数据集授权访问并落审计。
 
 #### 3.7.3 IPK_ANL_39 创建语料作业
 
@@ -2591,14 +2623,14 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 
 ### 6.3 卡片曝光与点击契约
 
-此处为 BI-13 的接口设计值，活动基线仍覆盖该功能，细节通过人工契约评审确认。建议连续可见达到 **50% 面积且不少于 1 秒**才触发曝光。切后台、失焦或低于阈值时中断连续计时。以 `pageViewId + listRequestId + placementCode + targetType + targetId + position` 划分曝光实例。相同列表批次的虚拟列表重渲染或回滚复用实例，同一页面新请求的列表批次重新计曝光。
+BI-13 的 App 端触发规则采用连续可见达到 **50% 面积且不少于 1 秒**。后台的 Schema 校验可见时长字段下限为 1000 毫秒。切后台、失焦或低于阈值时中断连续计时。以 `pageViewId + listRequestId + placementCode + targetType + targetId + position` 划分曝光实例。相同列表批次的虚拟列表重渲染或回滚复用实例，同一页面新请求的列表批次重新计曝光。
 
 |事件|生产时机|properties 字段|业务关联|
 |---|---|---|---|
 |EVT_25 `card_impression` v1|首次满足可见阈值|impressionId:UUID、listRequestId:UUID、placementCode:string、targetType:string、targetId:string、position:int、visibleMs:int，均必填|写 fact_card_impression，position 从 1 开始|
 |EVT_26 `card_impression_click` v1|点击已有有效曝光的卡片|impressionId:UUID、listRequestId:UUID、placementCode:string、targetType:string、targetId:string、position:int，均必填|仅归同页面、同列表批次、同目标的已记录曝光；多次点击在 CTR 分子中计一次|
 
-两事件通过 ANL_03 上报，screenName/pageViewId 同批信封必填，无有效曝光的卡片点击仍可按现有搜索打开契约记录。ANL_23 的分子只计能归因的点击。两个新事件的登记、Schema 和 position 上限在人工评审后同步到数据字典。
+两事件通过 ANL_03 上报，screenName/pageViewId 同批信封必填，无有效曝光的卡片点击仍可按现有搜索打开契约记录。ANL_23 的分子只计能归因的点击。两个事件已登记 v1 Schema，position 上限 2147483647，详见数据字典。
 
 示例 `properties`。
 
@@ -2662,6 +2694,6 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**人工评审前需确认** 路由是否沿用现有前缀，旧分页客户端的迁移方式，权限键与 SSO 映射，卡片可见阈值与位置字典，以及创建接口幂等记录的物理落点。评审通过后按本文示例搭建前端 Mock。审批、语料治理和导出下载都按数据范围验证。导出和语料作业的真实执行、下载、SSO 及 Kafka 投递须在联调环境验证。
+**人工评审前需确认** 路由是否沿用现有前缀，旧分页客户端的迁移方式，权限键与内部账号映射，卡片可见阈值与位置字典，以及创建接口幂等记录的物理落点。评审通过后按本文示例搭建前端 Mock。审批、语料治理和导出下载都按数据范围验证。导出和语料作业的真实执行、下载、内部账号登录及 Kafka 投递须在联调环境验证。
 
 

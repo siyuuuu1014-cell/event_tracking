@@ -1,0 +1,2 @@
+# Migration checksums are computed over the SQL file bytes.
+backend/src/ipaklink_analytics/infrastructure/schema/**/*.sql text eol=lf

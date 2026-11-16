@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,5 +22,20 @@ class Settings(BaseSettings):
     mongo_uri: SecretStr = SecretStr(
         "mongodb://127.0.0.1:57017/?directConnection=true&replicaSet=rs0"
     )
+    mongo_database: str = "analytics"
     health_timeout_seconds: int = 3
+    signing_secret: SecretStr = SecretStr("")
+    app_jwt_secret: SecretStr = SecretStr("")
+    app_jwt_issuer: str = ""
+    app_jwt_audience: str = ""
+    kafka_consumer_group: str = "analytics-warehouse-v1"
+    export_bucket: str = ""
+    export_s3_endpoint: str = ""
+    export_s3_region: str = "us-east-1"
+    export_s3_access_key: SecretStr = SecretStr("")
+    export_s3_secret_key: SecretStr = SecretStr("")
+    export_dir: Path = Path("logs/exports")
+    quality_lag_threshold: int = Field(default=1000, ge=1)
+    job_api_origin: str = "http://127.0.0.1:8000"
+    admin_origin: str = "http://127.0.0.1:58000"
 

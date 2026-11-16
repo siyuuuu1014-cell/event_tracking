@@ -11,22 +11,28 @@ class JsonFormatter(logging.Formatter):
         entry = {
             "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
-            "service": "analytics-api",
+            "service": getattr(record, "serviceName", "analytics-api"),
             "action": record.getMessage(),
         }
-        for name in ("requestId", "route", "method", "resultCode", "durationMs", "errorType"):
+        for name in ("requestId", "route", "method", "resultCode", "durationMs", "errorType", "count"):
             if hasattr(record, name):
                 entry[name] = getattr(record, name)
         return json.dumps(entry, ensure_ascii=False)
 
 
-def get_logger(log_dir: Path) -> logging.Logger:
+class ServiceLogger(logging.LoggerAdapter):
+    def process(self, msg, kwargs):
+        kwargs["extra"] = {**kwargs.get("extra", {}), **(self.extra or {})}
+        return msg, kwargs
+
+
+def get_logger(log_dir: Path, service: str = "analytics-api") -> logging.LoggerAdapter:
     log_dir = log_dir.resolve()
-    logger = logging.getLogger(f"ipaklink.analytics.api.{log_dir}")
+    logger = logging.getLogger(f"ipaklink.{service}.{log_dir}")
     if not logger.handlers:
         log_dir.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(
-            log_dir / f"api-{os.getpid()}.log",
+            log_dir / f"{service.removeprefix('analytics-')}-{os.getpid()}.log",
             maxBytes=256 * 1024 * 1024,
             backupCount=4,
             encoding="utf-8",
@@ -36,5 +42,5 @@ def get_logger(log_dir: Path) -> logging.Logger:
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         logger.propagate = False
-    return logger
+    return ServiceLogger(logger, {"serviceName": service})
 

@@ -1,0 +1,63 @@
+:root {
+  font-family: "Instrument Sans", "Microsoft YaHei", system-ui, sans-serif;
+  color: #222b25;
+  background: #eef2ec;
+  color-scheme: light;
+  font-synthesis: none;
+  line-height: 1.5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+.shell {
+  width: min(100% - 2rem, 28rem);
+  margin: clamp(3rem, 15vh, 10rem) auto 3rem;
+}
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  margin: 0 0 1rem;
+  font-size: 1.2rem;
+  font-weight: 750;
+  letter-spacing: -.02em;
+}
+.brand span { color: #525f55; font-size: .875rem; font-weight: 500; }
+.panel {
+  padding: clamp(1.5rem, 6vw, 2.25rem);
+  border: 1px solid #d4dfd3;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 14px 36px #24392b0d;
+}
+h1 { margin: 0 0 1.5rem; font-size: 1.65rem; line-height: 1.25; }
+form { display: grid; gap: .5rem; }
+label { font-size: .9rem; font-weight: 650; }
+input, button {
+  min-height: 2.75rem;
+  border-radius: .5rem;
+  font: inherit;
+}
+input {
+  width: 100%;
+  margin: 0 0 .65rem;
+  border: 1px solid #a7b6ab;
+  padding: .4rem .75rem;
+  background: #f9fbf8;
+}
+button {
+  width: 100%;
+  margin-top: .4rem;
+  border: 1px solid #225339;
+  background: #225339;
+  color: #fff;
+  padding: .5rem 1rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: #163e28; }
+button:disabled { opacity: .65; cursor: wait; }
+:focus-visible { outline: 3px solid #548964; outline-offset: 2px; }
+.error { color: #a32729; margin: 1rem 0 0; }
+dl { margin: 0 0 1.5rem; }
+dt { color: #526057; font-size: .85rem; }
+dd { margin: .25rem 0 1rem; overflow-wrap: anywhere; }

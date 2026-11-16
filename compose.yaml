@@ -60,6 +60,8 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analytics.event --partitions 3 --replication-factor 1 --config retention.ms=604800000
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analytics.event.dlq.v1 --partitions 1 --replication-factor 1 --config retention.ms=1209600000
 
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analytics.corpus.status --partitions 1 --replication-factor 1 --config retention.ms=604800000
+
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
     environment:
@@ -70,7 +72,7 @@ services:
     ports: ["127.0.0.1:58123:8123"]
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - ./infra/clickhouse/001_events.sql:/docker-entrypoint-initdb.d/001_events.sql:ro
+      - ./backend/src/ipaklink_analytics/infrastructure/schema/clickhouse/bootstrap/001_events.sql:/docker-entrypoint-initdb.d/001_events.sql:ro
     healthcheck:
       test: ["CMD", "clickhouse-client", "--user=analytics", "--password=analytics_local", "--query=SELECT 1 FROM analytics.events_raw LIMIT 1"]
       interval: 5s
@@ -111,20 +113,54 @@ services:
     build: ./backend
     environment:
       ANALYTICS_POSTGRES_DSN: postgresql://analytics:analytics_local@postgres:5432/analytics
-    command: ["python", "-m", "ipaklink_analytics.infrastructure.postgres.migrate"]
+      ANALYTICS_CLICKHOUSE_HOST: clickhouse
+      ANALYTICS_CLICKHOUSE_PORT: 8123
+      ANALYTICS_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+    command: ["python", "-m", "ipaklink_analytics.infrastructure.schema.migrate"]
     depends_on:
       postgres:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+
+  object-storage:
+    image: ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: analytics-local
+      MINIO_ROOT_PASSWORD: analytics-local-storage
+    volumes: ["export-objects:/data"]
+
+  object-storage-init:
+    build: ./backend
+    command: ["python", "-m", "ipaklink_analytics.infrastructure.export_objects"]
+    environment: &export-environment
+      ANALYTICS_EXPORT_BUCKET: analytics-exports
+      ANALYTICS_EXPORT_S3_ENDPOINT: http://object-storage:9000
+      ANALYTICS_EXPORT_S3_ACCESS_KEY: analytics-local
+      ANALYTICS_EXPORT_S3_SECRET_KEY: analytics-local-storage
+    depends_on:
+      object-storage:
+        condition: service_started
 
   api:
     build: ./backend
-    environment:
+    environment: &api-environment
+      <<: *export-environment
       ANALYTICS_POSTGRES_DSN: postgresql://analytics:analytics_local@postgres:5432/analytics
       ANALYTICS_REDIS_URL: redis://redis:6379/0
       ANALYTICS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       ANALYTICS_CLICKHOUSE_HOST: clickhouse
       ANALYTICS_CLICKHOUSE_PORT: 8123
       ANALYTICS_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      ANALYTICS_SIGNING_SECRET: ${ANALYTICS_SIGNING_SECRET:?Set ANALYTICS_SIGNING_SECRET in .env}
+      ANALYTICS_APP_JWT_SECRET: ${ANALYTICS_APP_JWT_SECRET:-}
+      ANALYTICS_APP_JWT_ISSUER: ${ANALYTICS_APP_JWT_ISSUER:-}
+      ANALYTICS_APP_JWT_AUDIENCE: ${ANALYTICS_APP_JWT_AUDIENCE:-}
+      ANALYTICS_ADMIN_ORIGIN: ${ANALYTICS_ADMIN_ORIGIN:-http://127.0.0.1:58000}
+      ANALYTICS_ENVIRONMENT: ${ANALYTICS_ENVIRONMENT:-local}
     ports: ["127.0.0.1:58000:8000"]
     volumes: ["api-logs:/app/logs"]
     depends_on:
@@ -139,10 +175,45 @@ services:
       clickhouse:
         condition: service_healthy
 
+  jobs:
+    build: ./backend
+    command: ["python", "-m", "ipaklink_analytics.application.job_worker"]
+    restart: on-failure
+    environment:
+      <<: *api-environment
+      ANALYTICS_JOB_API_ORIGIN: http://api:8000
+      ANALYTICS_QUALITY_LAG_THRESHOLD: ${ANALYTICS_QUALITY_LAG_THRESHOLD:-1000}
+    volumes: ["api-logs:/app/logs"]
+    depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+
+  consumer:
+    build: ./backend
+    command: ["python", "-m", "ipaklink_analytics.consumer"]
+    restart: on-failure
+    environment:
+      ANALYTICS_POSTGRES_DSN: postgresql://analytics:analytics_local@postgres:5432/analytics
+      ANALYTICS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ANALYTICS_CLICKHOUSE_HOST: clickhouse
+      ANALYTICS_CLICKHOUSE_PORT: 8123
+      ANALYTICS_SIGNING_SECRET: ${ANALYTICS_SIGNING_SECRET:?Set ANALYTICS_SIGNING_SECRET in .env}
+    volumes: ["api-logs:/app/logs"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   kafka-data:
   clickhouse-data:
   mongo-data:
   api-logs:
+  export-objects:
 

@@ -29,7 +29,7 @@
 |数据平台|PostgreSQL、ClickHouse、MongoDB 副本集、Kafka、Redis、对象存储|独立系统的 PG 管受理、权限和控制数据，ClickHouse 管分析事实与报表，MongoDB 管独立系统的语料治理集合，Redis 管限流与缓存。原业务消息和翻译内容由业务侧 MongoDB 承载。对象存储承载授权导出及受控文件引用。|
 |观测|Python logging、JSON Lines `.log`、OpenTelemetry Python、Prometheus 兼容采集|每个进程独立输出结构化文件日志，指标及追踪按 requestId 和 traceId 关联。|
 
-Python 3.12 是本设计的运行时基线。Python 依赖写入 `pyproject.toml` 并锁定，Web 使用独立锁文件，镜像固定构建版本。当前工作区可核实的是 React Native 工程，Python 埋点后台和 React Web 属于待实现部分。既有业务服务通过其 API、Kafka 和权威库适配器接入。生产拓扑、SSO 参数和依赖版本在联调环境确认。[FastAPI 并发模型](https://fastapi.tiangolo.com/async/) · [Psycopg 连接池](https://www.psycopg.org/psycopg3/docs/advanced/pool.html) · [ClickHouse Python 驱动](https://clickhouse.com/integrations/python) · [PyMongo 事务](https://www.mongodb.com/docs/languages/python/pymongo-driver/current/crud/transactions/) · [redis-py](https://redis.io/docs/latest/develop/clients/redis-py/)
+Python 3.12 是本设计的运行时基线。Python 依赖写入 `pyproject.toml` 并锁定，Web 使用独立锁文件，镜像固定构建版本。当前工作区可核实的是 React Native 工程，Python 埋点后台和 React Web 属于待实现部分。既有业务服务通过其 API、Kafka 和权威库适配器接入。生产拓扑和依赖版本在联调环境确认。[FastAPI 并发模型](https://fastapi.tiangolo.com/async/) · [Psycopg 连接池](https://www.psycopg.org/psycopg3/docs/advanced/pool.html) · [ClickHouse Python 驱动](https://clickhouse.com/integrations/python) · [PyMongo 事务](https://www.mongodb.com/docs/languages/python/pymongo-driver/current/crud/transactions/) · [redis-py](https://redis.io/docs/latest/develop/clients/redis-py/)
 
 ### 1.2 代码与进程边界
 
@@ -163,10 +163,10 @@ PG 常规事务使用 Read Committed，使用唯一键和条件更新保障并�
 |---|---|---|
 |App 已登录|复用既有 access token 和认证中间件|由验证身份派生 actorKey，按采集策略和 epoch 核验。App token 只允许面向 App 的接口。|
 |App 匿名|ANL_02 签发独立用途短时 token，建议 15 分钟|绑定 installId、identityEpoch、环境、audience 和用途。Collector 校验与请求一致。匿名凭据不能使用后台路由。|
-|后台 Web|复用企业 SSO，OIDC 授权码 + PKCE，后台 access token 仅保存在会话内存|FastAPI 鉴权依赖使用 PyJWT 验签，校验 iss/aud/exp 和存在时的 nbf，固定算法白名单，仅接受预配置 issuer/JWKS。403 对已认证但无角色、数据范围或工单的请求。|
+|后台 Web|React 登录页提交公司内部账号和密码，同源 HTTPS 下使用 HttpOnly、Secure、SameSite=Strict 的会话 Cookie|FastAPI 使用 Argon2id 校验 PostgreSQL 密码哈希，Redis 存有期限的会话和登录限流计数。每次保护请求检查账号状态及授权。后台状态变更校验请求来源。|
 |后台内部服务|工作负载身份与 TLS，Kafka SASL/TLS 和 Topic ACL，服务间按已有生产规范认证|Collector 只有输入写权限，数仓读输入及写安全 DLQ，查询服务只读已发布数据。数据库角色按分工配置。|
 
-SSO 后台主体映射 `analytics_access_grant.principal_id`，授权以角色权限与行级 regionId、datasetCode、ticketId 范围为交集。工单校验还要绑定操作、有效期与目标对象。UI 菜单只负责展现，API 对每次读写重新鉴权。发布、回滚、授权、撤销、敏感读取和语料操作记录安全审计。403 只返回稳定错误码。后台跨站请求仅允许预配置源。[OAuth 安全实践](https://www.rfc-editor.org/rfc/rfc9700.html) · [JWT 签发方和受众校验](https://www.rfc-editor.org/rfc/rfc8725.html)
+账号由维护人员用交互命令创建，首位平台管理员与账号在同一事务内初始化。停用账号须终止其会话。`analytics_admin_account.account_id` 映射 `analytics_access_grant.principal_id`，授权以角色权限与行级 regionId、datasetCode、ticketId 范围为交集。工单校验还要绑定操作、有效期与目标对象。UI 菜单只负责展现，API 对每次读写重新鉴权。发布、回滚、授权、撤销、敏感读取和语料操作记录安全审计。403 只返回稳定错误码。后台登录密码、密码哈希和会话令牌不写入 `.log`。React 和 API 通过同一站点提供服务。
 
 ### 6.2 数据与文件保护
 
@@ -214,9 +214,9 @@ SSO 后台主体映射 `analytics_access_grant.principal_id`，授权以角色�
 
 ## 9. 实施依赖和评审结论
 
-1. 冻结数据字典增量迁移、SSO issuer/audience 和角色映射、卡片可见阈值、Kafka 资源及数据保留期限。确定已有询盘 `dialogId/sessionId` 与成功状态的适配边界。
+1. 冻结数据字典增量迁移、内部账号初始化、登录会话和角色映射、卡片可见阈值、Kafka 资源及数据保留期限。确定已有询盘 `dialogId/sessionId` 与成功状态的适配边界。
 2. 前端依 API 完成 Mock，后端先跑通采集、询盘事实、仓库和一个看板查询，建立故障注入与对账样例。
 3. 复用相同事务、鉴权和发布机制完成全部查询和管理能力。通过表中的故障和防串权限测试后，对 53 项功能逐条留验收证据。
 
-本次文档确定了技术方案、数据访问边界和默认值。未部署服务、执行数据库迁移或运行线上压测。新增字段及索引、SSO 对接、卡片阈值和基础设施参数需在技术评审和联调中落定。
+本次文档确定了技术方案、数据访问边界和默认值。未部署服务、执行数据库迁移或运行线上压测。新增字段及索引、内部账号登录联调、卡片阈值和基础设施参数需在技术评审和联调中落定。
 

@@ -19,7 +19,7 @@
 |---|---|---|
 |事件版本 → 受理记录|一对多|analytics_ingest_receipt(event_name,schema_version) 复合 FK 指向 analytics_event_schema；策略使用独立 policy_version FK。受理记录和外键依赖到期前保留父记录。|
 |快照 ↔ 数据集构建|多对多|analytics_report_snapshot_build 将 snapshot_id 与 (dataset,date_key,generation) 连接。逻辑上一个构建可被多个快照复用，同一快照的同一数据集日期仅选择一代。|
-|SSO 主体 ↔ 分析角色|多对多|analytics_access_grant 为关联表。role_code 物理 FK 指向 analytics_role。principal_id 是外部 SSO 逻辑引用，可按角色、范围与工单授予多条记录。|
+|内部账号 ↔ 分析角色|多对多|analytics_access_grant 为关联表。role_code 指向 analytics_role，principal_id 指向 analytics_admin_account。可按角色、范围与工单授予多条记录。|
 |快照 → 回放发布结果、导出、通知|一对多|published_snapshot_id、snapshot_id 物理 FK 指向快照。删除前检查合规保留、导出和审计引用。|
 |语料数据集修订 → 条目和作业|一对多|corpus_items.datasetId、corpus_jobs.datasetId 手动引用 MongoDB corpus_datasets._id。写入校验父集合修订状态和权限。父集禁用后阻止新写入并扫描已存在的子项，清理按作业推进与复核。|
 |业务主体或内容 → 分析事实|一对多|通过 actor_key、目标 ID、dialog_ref、record_ref 等安全标识跨库关联。业务库为权威源，行为仓库按水位补偿和对账。|
@@ -197,7 +197,7 @@ CREATE INDEX idx_snapshot_build_reverse
 |---|---|---|---|---|---|---|---|---|
 |`job_id`|`varchar(80)`|80|是|—|是|是|—|作业标识|
 |`job_type`|`varchar(16)`|16|—|—|—|是|—|rebuild、replay|
-|`operator_id`|`varchar(128)`|128|—|逻辑 → SSO 主体|组合|是|—|后台操作者的 SSO 标识|
+|`operator_id`|`varchar(128)`|128|—|逻辑 → analytics_admin_account.account_id|组合|是|—|内部操作者账号 ID|
 |`idempotency_key`|`varchar(128)`|128|—|—|组合|是|—|创建请求去重键|
 |`request_hash`|`char(64)`|64|—|—|—|是|—|规范请求摘要|
 |`scope`|`jsonb`|—|—|—|—|是|—|日期或 Topic 分区和位点范围|
@@ -208,6 +208,35 @@ CREATE INDEX idx_snapshot_build_reverse
 |`published_snapshot_id`|`varchar(80)`|80|—|FK → analytics_report_snapshot.snapshot_id|—|否|—|发布成功后的快照；试运行为空|
 |`created_at`|`timestamptz`|8|—|—|—|是|`now()`|创建时间|
 |`finished_at`|`timestamptz`|8|—|—|—|否|—|结束时间|
+
+### analytics_admin_account
+
+运营人员使用维护命令逐人开户，命令交互读取初始密码并生成 Argon2id 哈希。账号停用后保留历史审计引用。
+
+| 字段 | 类型 | 长度 | 主键 | 外键 | 唯一 | 非空 | 默认值 | 说明 |
+|---|---|---|---|---|---|---|---|---|
+| `account_id` | `varchar(128)` | 128 | 是 | — | 是 | 是 | — | 后端生成的稳定账号 ID，用于授权和审计 |
+| `username` | `varchar(64)` | 64 | 否 | — | 是 | 是 | — | 内部登录名，写入前转为小写 |
+| `display_name` | `varchar(100)` | 100 | 否 | — | 否 | 是 | — | 员工显示名 |
+| `password_hash` | `text` | — | 否 | — | 否 | 是 | — | 含随机盐和算法参数的 Argon2id 哈希 |
+| `status` | `varchar(16)` | 16 | 否 | — | 否 | 是 | `active` | `active` 或 `disabled` |
+| `created_at` | `timestamptz` | — | 否 | — | 否 | 是 | `now()` | 首次开户时间 |
+
+后台登录会话存在 Redis，以随机会话令牌的摘要为键，值为 `account_id`，配套 TTL。登录限流计数也存 Redis。每次保护请求检查账号状态和有效授权。
+
+### analytics_repair_failure
+
+记录修复作业的安全失败码及可定位的 Kafka 位点。原消息内容不落此表。
+
+| 字段 | 类型 | 长度 | 主键 | 外键 | 唯一 | 非空 | 默认值 | 说明 |
+|---|---|---|---|---|---|---|---|---|
+| `failure_id` | `bigserial` | 8 | 是 | — | 是 | 是 | 序列 | 失败明细标识与稳定分页顺序 |
+| `job_id` | `varchar(80)` | 80 | 否 | → analytics_repair_job.job_id | 否 | 是 | — | 所属修复作业 |
+| `topic` | `varchar(249)` | 249 | 否 | — | 否 | 否 | — | 对应 Kafka Topic |
+| `partition` | `integer` | 4 | 否 | — | 否 | 否 | — | 对应 Kafka 分区 |
+| `offset_value` | `varchar(20)` | 20 | 否 | — | 否 | 否 | — | 十进制 Kafka 位点 |
+| `error_code` | `varchar(80)` | 80 | 否 | — | 否 | 是 | — | 安全错误码 |
+| `occurred_at` | `timestamptz` | — | 否 | — | 否 | 是 | now() | 失败时间 |
 
 ### analytics_role
 
@@ -225,17 +254,28 @@ CREATE INDEX idx_snapshot_build_reverse
 
 **阶段与功能** 本期；GOV-01；BI-10、ADM-03 复用。
 
-SSO 主体与角色的多对多关联表。角色列物理 FK；主体为外部 SSO 逻辑引用。索引(principal_id,role_code) 和 role_code；允许按不同范围或工单分别授予。
+内部账号与角色的多对多关联表。角色和账号均为物理 FK。增量迁移立即约束新授权。历史开发授权可保留，账号映射处理后可验证全部历史数据。索引(principal_id,role_code) 和 role_code；允许按不同范围或工单分别授予。
 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
 |`grant_id`|`uuid`|16|是|—|是|是|—|授权记录 ID|
-|`principal_id`|`varchar(128)`|128|—|逻辑 → SSO 主体|—|是|—|外部 SSO 稳定主体 ID|
+|`principal_id`|`varchar(128)`|128|—|→ analytics_admin_account.account_id|—|是|—|内部账号稳定 ID|
 |`role_code`|`varchar(40)`|40|—|FK → analytics_role.role_code|—|是|—|角色代码|
 |`scope`|`jsonb`|—|—|—|—|是|—|允许的数据集、区域或用途|
 |`ticket_id`|`varchar(80)`|80|—|—|—|否|—|工单标识，敏感访问按策略必填|
 |`expires_at`|`timestamptz`|8|—|—|—|否|—|到期时间|
 |`revoked_at`|`timestamptz`|8|—|—|—|否|—|撤销生效时间|
+
+### analytics_access_grant_request
+
+按操作者与幂等键保存创建授权的请求摘要，与授权和审计同事务提交。
+
+| 字段 | 类型 | 长度 | 主键 | 外键 | 唯一 | 非空 | 默认值 | 说明 |
+|---|---|---|---|---|---|---|---|---|
+| `operator_id` | `varchar(128)` | 128 | 联合 | → analytics_admin_account.account_id | 联合 | 是 | — | 发起授予的内部账号 |
+| `idempotency_key` | `varchar(128)` | 128 | 联合 | — | 联合 | 是 | — | 请求头提供的幂等键 |
+| `request_hash` | `char(64)` | 64 | 否 | — | 否 | 是 | — | 规范化请求 SHA-256 十六进制摘要 |
+| `grant_id` | `uuid` | — | 否 | → analytics_access_grant.grant_id | 否 | 是 | — | 首次成功创建的授权 |
 
 ### analytics_admin_audit
 
@@ -246,7 +286,7 @@ SSO 主体与角色的多对多关联表。角色列物理 FK；主体为外部 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
 |`audit_id`|`uuid`|16|是|—|是|是|—|审计记录 ID|
-|`operator_id`|`varchar(128)`|128|—|逻辑 → SSO 主体|—|是|—|后台操作者安全标识|
+|`operator_id`|`varchar(128)`|128|—|逻辑 → analytics_admin_account.account_id|—|是|—|后台操作者安全标识|
 |`action`|`varchar(80)`|80|—|—|—|是|—|读取、配置、修复、回滚等动作|
 |`ticket_id`|`varchar(80)`|80|—|—|—|否|—|操作关联工单|
 |`scope_safe`|`jsonb`|—|—|—|—|是|—|脱敏后的访问范围|
@@ -278,7 +318,7 @@ SSO 主体与角色的多对多关联表。角色列物理 FK；主体为外部 
 |---|---|---|---|---|---|---|---|---|
 |`job_id`|`varchar(80)`|80|是|—|是|是|—|导出 ID|
 |`snapshot_id`|`varchar(80)`|80|—|FK → analytics_report_snapshot.snapshot_id|—|是|—|绑定已发布快照|
-|`requester_id`|`varchar(128)`|128|—|逻辑 → SSO 主体|—|是|—|SSO 请求人|
+|`requester_id`|`varchar(128)`|128|—|逻辑 → analytics_admin_account.account_id|—|是|—|内部请求人账号 ID|
 |`query_spec`|`jsonb`|—|—|—|—|是|—|固定时区、筛选、列和权限作用域|
 |`status`|`varchar(16)`|16|—|—|—|是|`queued`|queued、running、succeeded、failed|
 |`artifact_ref`|`text`|—|—|—|—|否|—|授权文件引用|
@@ -303,6 +343,35 @@ SSO 主体与角色的多对多关联表。角色列物理 FK；主体为外部 
 |`attempts`|`integer`|4|—|—|—|是|`0`|发送尝试次数|
 |`created_at`|`timestamptz`|8|—|—|—|是|`now()`|创建时间|
 |`sent_at`|`timestamptz`|8|—|—|—|否|—|实际投递时间|
+
+### analytics_quality_observation
+
+采集端按请求写入处理计数，消费者按 Kafka 坐标记一次已确认死信。无平台和版本的观测只用于无维度筛选的质量统计。
+
+| 字段 | 类型 | 长度 | 主键 | 外键 | 唯一 | 非空 | 默认值 | 说明 |
+|---|---|---|---|---|---|---|---|---|
+| observation_key | varchar(128) | 128 | 是 | — | 是 | 是 | — | 请求 ID 或死信的源坐标 |
+| recorded_at | timestamptz | — | 否 | — | 否 | 是 | clock_timestamp() | 质量观测入库时刻 |
+| platform | varchar(16) | 16 | 否 | — | 否 | 否 | — | 可验证的平台 |
+| app_version | varchar(40) | 40 | 否 | — | 否 | 否 | — | 可验证的版本 |
+| rejected | integer | 4 | 否 | — | 否 | 是 | 0 | 拒绝事件数 |
+| duplicates | integer | 4 | 否 | — | 否 | 是 | 0 | 重复事件数 |
+| rate_limited | integer | 4 | 否 | — | 否 | 是 | 0 | 限流请求数 |
+| retry | integer | 4 | 否 | — | 否 | 是 | 0 | 返回重试状态的事件数 |
+| dlq | integer | 4 | 否 | — | 否 | 是 | 0 | 已确认的死信数 |
+
+### analytics_kafka_lag_sample
+
+每个分区按采样时间保存消费组已提交位点与 Kafka 末端位点，积压为两者的差。
+
+| 字段 | 类型 | 长度 | 主键 | 外键 | 唯一 | 非空 | 默认值 | 说明 |
+|---|---|---|---|---|---|---|---|---|
+| sampled_at | timestamptz | — | 联合 | — | 联合 | 是 | — | 一组分区共用的采样时刻 |
+| topic | varchar(249) | 249 | 联合 | — | 联合 | 是 | — | Kafka Topic |
+| partition | integer | 4 | 联合 | — | 联合 | 是 | — | Kafka 分区 |
+| next_offset | bigint | 8 | 否 | — | 否 | 是 | — | 消费组的下一位点 |
+| high_offset | bigint | 8 | 否 | — | 否 | 是 | — | 末端位点 |
+| stalled | boolean | 1 | 否 | — | 否 | 否 | — | 有积压且一段时间未推进，历史不足为空 |
 
 ### 4.1 既有 PostgreSQL 业务表的分析投影
 
@@ -498,7 +567,7 @@ ReplacingMergeTree，按 business_date 的月份分区，ORDER BY (business_date
 
 **阶段与功能** 本期；BIZ-01、BI-03、BI-04。
 
-逻辑键 (business_date,generation,actor_key,search_id)。F02 用同主体、同目标和 15 分钟窗关联。
+逻辑键 (business_date,generation,actor_key,search_id)。从同一原始事件水位构建，按同主体、同搜索 ID、同目标和 15 分钟窗口关联。写入 `fact_search`，快照数据集名称为 `searches`。
 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
@@ -517,6 +586,9 @@ ReplacingMergeTree，按 business_date 的月份分区，ORDER BY (business_date
 |`detail_at`|`DateTime64(3, 'UTC')`|8|—|—|—|否|—|匹配目标的详情曝光时间|
 |`matched_target_type`|`String`|—|—|—|—|否|—|匹配企业/产品类型|
 |`matched_target_id`|`String`|—|—|—|—|否|—|匹配目标 ID|
+|`platform`|`LowCardinality(String)`|—|—|—|—|是|unknown|搜索发起时的平台|
+|`app_version`|`String`|—|—|—|—|是|unknown|搜索发起时的 App 版本|
+|`region_id`|`UInt32`|4|—|—|—|是|0|搜索发起时的地区|
 
 ### fact_inquiry_flow
 
@@ -597,12 +669,15 @@ ReplacingMergeTree，按 business_date 的月份分区，ORDER BY (business_date
 |`outcome`|`String`|—|—|—|—|否|—|success、failed、cancelled|
 |`latency_ms`|`UInt64`|8|—|—|—|否|—|执行耗时|
 |`error_code`|`String`|—|—|—|—|否|—|失败时固定错误码|
+|`platform`|`LowCardinality(String)`|—|—|—|是|unknown|任务开始时的平台|
+|`app_version`|`String`|—|—|—|是|unknown|任务开始时的版本|
+|`region_id`|`UInt32`|4|—|—|—|是|0|任务开始时的地区|
 
 ### agg_metric_day
 
 **阶段与功能** 本期；DW-04、BI-01–05，BI-11、13 复用。
 
-逻辑键 (business_date,generation,metric_code,metric_version,dim_set,dim_values)。按固定顺序和字典生成维度键。首期去重和分位可在事实层重新查询，避免累加日 UV、日比率或日 P95。
+逻辑键 (business_date,generation,metric_code,metric_version,dim_set,dim_values)。按固定顺序和字典生成维度键。日指标数据集在快照中注册为 dailyMetrics。已有全域日活、匿名 UV 和翻译成功率分子分母。跨日 UV 和 P95 在事实或兼容查询层重算，各日比率按分子和分母合并。
 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
@@ -679,7 +754,7 @@ ReplacingMergeTree，按 business_date 的月份分区，ORDER BY (business_date
 
 **阶段与功能** 下期；BI-13。
 
-拟建，逻辑键 (business_date,generation,impression_id)。本期只复用事件信封，不创建表或启用采集。达到可见标准才记一条；点击重复时同曝光仅计一个已点击曝光。
+从卡片事件生成快照事实。逻辑键为 (business_date,generation,actor_key,impression_id)。达到可见标准才记一条，重复点击时同曝光仅计一个已点击曝光。
 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
@@ -695,7 +770,10 @@ ReplacingMergeTree，按 business_date 的月份分区，ORDER BY (business_date
 |`position`|`UInt32`|4|—|—|—|是|—|列表中的位置|
 |`visible_ms`|`UInt64`|8|—|—|—|是|—|可见时长|
 |`exposed_at`|`DateTime64(3, 'UTC')`|8|—|—|—|是|—|满足可见阈值的时刻|
-|`first_click_at`|`DateTime64(3, 'UTC')`|8|—|—|—|否|—|能与该曝光关联的首个点击|
+|`first_click_at`|`Nullable(DateTime64(3, 'UTC'))`|8|—|—|—|否|—|能与该曝光关联的首个点击|
+|`platform`|`LowCardinality(String)`|—|—|—|—|是|unknown|曝光时的平台|
+|`app_version`|`String`|—|—|—|—|是|unknown|曝光时的 App 版本|
+|`region_id`|`UInt32`|4|—|—|—|是|0|曝光时的地区和查询授权维度|
 
 ## 6. MongoDB 业务集合与语料
 
@@ -806,6 +884,18 @@ UQ(datasetId,sourceRef,revision)，索引(datasetId,reviewStatus,createdAt)、(s
 |`createdAt`|`BSON Date`|8|—|—|—|是|—|创建时间|
 |`expiresAt`|`BSON Date`|8|—|—|—|是|—|治理到期点，清理作业先传播再处理内容|
 |`tombstoneAt`|`BSON Date`|8|—|—|—|否|—|撤回或删除生效点|
+
+#### corpus_import_inputs
+
+授权的导入输入登记，维护端创建，请求只携带引用。所属数据集、用途和批准工单均在导入时校验。
+
+| 字段 | 类型 | 长度 | 主键 | 外键 | 唯一 | 非空 | 默认值 | 说明 |
+|---|---|---|---|---|---|---|---|---|
+| `_id` | string | — | 是 | — | 是 | 是 | — | 受控导入引用 |
+| `datasetId` | ObjectId | 12 | 否 | 逻辑 → corpus_datasets._id | 否 | 是 | — | 目标数据集及版本 |
+| `purposeCode` | string | — | 否 | — | 否 | 是 | — | 与数据集一致的授权用途 |
+| `items` | array | ≤1000 项 | 否 | — | 否 | 是 | — | 受限正文及来源元数据 |
+| `createdAt` | date | — | 否 | — | 否 | 是 | — | 登记时间 |
 
 #### corpus_jobs
 
@@ -1108,10 +1198,37 @@ SQLite PK(event_id)，索引(identity_epoch,queue_state,next_retry_ms)。保存�
 |`reasonCode`|string|—|—|—|—|否|—|治理作业注册的固定原因码；禁止审核意见原文|
 
 
+### EVT_25 card_impression
+
+App 首次达到连续可见阈值时上报。页面事件信封中的 `screenName` 和 `pageViewId` 必填。
+
+|字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
+|---|---|---|---|---|---|---|---|---|
+|`impressionId`|UUID|16|—|逻辑 → fact_card_impression.impression_id|—|是|—|曝光实例，点击沿用曝光时的 ID|
+|`listRequestId`|UUID|16|—|—|—|是|—|列表请求批次|
+|`placementCode`|string|—|—|—|—|是|—|homeRecommendation 或 searchResults|
+|`targetType`|string|—|—|—|—|是|—|company 或 product|
+|`targetId`|string|80|—|—|—|是|—|公司或产品稳定业务 ID|
+|`position`|int|32 位|—|—|—|是|—|从 1 开始，上限 2147483647|
+|`visibleMs`|int|32 位|—|—|—|是|—|连续可见时长，范围为 1000–28800000 毫秒|
+
+### EVT_26 card_impression_click
+
+点击已记录的有效曝光时上报。各字段沿用对应曝光值，页面事件信封中的 `screenName` 和 `pageViewId` 必填。
+
+|字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
+|---|---|---|---|---|---|---|---|---|
+|`impressionId`|UUID|16|—|逻辑 → fact_card_impression.impression_id|—|是|—|曝光实例，点击沿用曝光时的 ID|
+|`listRequestId`|UUID|16|—|—|—|是|—|列表请求批次|
+|`placementCode`|string|—|—|—|—|是|—|homeRecommendation 或 searchResults|
+|`targetType`|string|—|—|—|—|是|—|company 或 product|
+|`targetId`|string|80|—|—|—|是|—|公司或产品稳定业务 ID|
+|`position`|int|32 位|—|—|—|是|—|从 1 开始，上限 2147483647|
+
 ## 9. 实施顺序与验收
 
 1. 本期先建 PG 事件注册、策略、受理、角色、发布与修复表，以及快照构建关联表、MongoDB Outbox 和 SQLite 队列。冻结清单指定的下期事件可预存模式定义，配置保持停用。Kafka 事件输入、DLQ、Redis 限流和 JSON Lines `.log` 作为存储外围接口。日志按既有设计使用 ts、level、service、requestId、traceId、action、resultCode 等安全字段，按日或容量轮转。
 2. 建原始和规范事件层，再按快照构建各事实、聚合及对账表。验证相同 eventId 的重复投递、失败回放、固定水位和原子快照；超出观察期或未闭合的统计使用空值与状态。业务库源表不由分析服务写入。
-3. 按各表标注的下期对象和冻结功能清单的字段预留启动下期。通知点击、译文深度、收藏、注册与受控会话沿用现有注册、事件表及权限表。导出、卡片曝光、语料和告警按表上标识创建。采集策略管理、修复后台和审计检索复用本期控制表。
+3. 按各表标注的下期对象和冻结功能清单的字段预留启动下期。通知点击、译文深度、收藏、注册与受控会话沿用现有注册、事件表及权限表。导出、语料和告警按表上标识接入。卡片事实随页面事实构建并发布。采集策略管理、修复后台和审计检索复用本期控制表。
 4. 迁移验收包括无父记录的物理 FK 写入拒绝、重复关联键拒绝、撤回时跨库逻辑引用传播、SQLite 切号隔离、同一 PostgreSQL 查询事务读取同一快照关联集合。真实部署前验证既有业务 ID/BSON 类型、ClickHouse 实际版本、保留期和索引负载。
 

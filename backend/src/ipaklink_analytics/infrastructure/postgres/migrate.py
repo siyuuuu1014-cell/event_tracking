@@ -7,7 +7,7 @@ from ipaklink_analytics.config import Settings
 
 
 def migrate(dsn: str) -> None:
-    resources = files("ipaklink_analytics.infrastructure.postgres").joinpath("migrations")
+    resources = files("ipaklink_analytics.infrastructure.schema").joinpath("postgres")
     scripts = sorted((item for item in resources.iterdir() if item.name.endswith(".sql")), key=lambda item: item.name)
     with psycopg.connect(dsn, autocommit=True) as connection:
         with connection.transaction():

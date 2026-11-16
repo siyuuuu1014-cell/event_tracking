@@ -98,7 +98,7 @@
 |---|---|---|---|---|---|---|
 |ADM-01|事件字典、灰度规则编辑与发布|采集 / 平台|analytics_event_schema、analytics_collection_policy|ANL_26–31、43、45|本次发布和关停可由部署配置执行|有草稿、校验、生效版本和操作审计|
 |ADM-02|修复历史、失败明细与后台回滚|平台 / Web|analytics_repair_job、analytics_report_snapshot|ANL_32–34、44；复用 ANL_21、22|本次用作业 ID 和受控运行流程处置|按状态和日期查作业，回滚后显示目标快照并审计|
-|ADM-03|授权、撤销和审计查询|平台 / Web|analytics_access_grant、analytics_admin_audit|ANL_35–38|本次授权可经 SSO 和受控配置管理|权限范围可验证，撤销生效，审计记录可按工单查找|
+|ADM-03|内部账号登录、授权、撤销和审计查询|平台 / Web|analytics_admin_account、analytics_access_grant、analytics_admin_audit、Redis 会话|ANL_35–38、46–47|维护人员为员工开户，员工用独立账号登录并按角色和数据范围工作|开户后可登录和退出，停用后原会话失效，授权撤销生效，审计可按工单和账号 ID 查询|
 |ADM-04|语料导入、审核、清理操作|业务 / 平台|corpus_datasets、corpus_items、corpus_jobs|ANL_39–41；ANL_18、19 读取|需与 GOV-04、05 对齐用途和删除语义|创建动作带用途与工单，进度可查，撤回后的分析数据可重算|
 |ADM-05|质量异常消息通知|平台 / Web|质量事件、告警投递去重键与审计|ANL_42；内部投递任务|重要异常便于主动发现，本次值班使用质量页和现有监控|同一异常按窗口去重，授权渠道可接收并能打开对应质量范围|
 

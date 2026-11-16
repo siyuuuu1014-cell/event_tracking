@@ -21,6 +21,11 @@ class PostgresPolicyRepository:
                                ARRAY(SELECT DISTINCT e.schema_version
                                      FROM analytics_event_schema e
                                      WHERE e.status = 'active' AND e.source = 'app'
+                                       AND (
+                                            p.rules->'enabled_event_names' IS NULL
+                                            OR p.rules->'enabled_event_names' = 'null'::jsonb
+                                            OR p.rules->'enabled_event_names' @> jsonb_build_array(e.event_name)
+                                       )
                                      ORDER BY e.schema_version) AS schema_versions
                         FROM analytics_collection_policy p
                         WHERE p.status = 'active' AND p.effective_at <= now()
