@@ -22,8 +22,9 @@ from redis import Redis
 from ipaklink_analytics.api.admin_login import PREFIX
 from ipaklink_analytics.api.jobs import REPORTS
 from ipaklink_analytics.application.build_pages import build
-from ipaklink_analytics.application.corpus_worker import drain_corpus
+from ipaklink_analytics.application.corpus_worker import drain_corpus, expire_corpus
 from ipaklink_analytics.application.ingest import BUSINESS_TIMEZONE
+from ipaklink_analytics.application.subject_erasure import run_erasure
 from ipaklink_analytics.config import Settings
 from ipaklink_analytics.consumer import COLUMNS, event_row
 from ipaklink_analytics.infrastructure.admin_sessions import COOKIE
@@ -31,6 +32,8 @@ from ipaklink_analytics.infrastructure import export_objects
 from ipaklink_analytics.infrastructure.identity import IdentityService
 from ipaklink_analytics.infrastructure.logging import get_logger
 from ipaklink_analytics.infrastructure.report_store import clickhouse_client
+from ipaklink_analytics.infrastructure.snapshot_outbox import SnapshotRelay
+from ipaklink_analytics.infrastructure.subject_erasure import filter_rows, persist_events
 from ipaklink_analytics.infrastructure.quality_telemetry import enqueue_quality_alerts, sample_kafka
 
 TABLES = {"repair":"analytics_repair_job","export":"analytics_export_job"}
@@ -84,7 +87,7 @@ def replay(settings, job, start, end):
                      "group.id":"analytics-repair-"+job["job_id"],
                      "enable.auto.commit":False,"enable.auto.offset.store":False,"enable.partition.eof":True})
     identity=IdentityService(settings)
-    rows,scanned,dates=[],0,set()
+    rows,scanned=[],0
     current=begin
     try:
         source=TopicPartition(topic,partition,begin)
@@ -112,16 +115,18 @@ def replay(settings, job, start, end):
             except (ValueError,TypeError,KeyError,AttributeError,OverflowError) as error:
                 raise JobProblem("invalidEvent",topic=topic,partition=partition,offset=msg.offset()) from error
             if start<=row[5]<end:
-                dates.add(row[5])
                 rows.append((*row[:-1],job["job_id"]))
         if current<finish:
             raise JobProblem("replayTimeout",topic=topic,partition=partition,offset=current)
     finally:
         client.close()
-    if rows and not job["dry_run"]:
-        with clickhouse_client(settings) as ch:
-            ch.insert("events_raw",rows,column_names=COLUMNS)
-    return scanned,len(dates)
+    if rows:
+        with psycopg.connect(settings.postgres_dsn.get_secret_value(),autocommit=True) as pg:
+            rows = filter_rows(pg,rows)
+            if rows and not job["dry_run"]:
+                with clickhouse_client(settings) as ch:
+                    persist_events(pg,ch,rows,COLUMNS)
+    return scanned,len({row[5] for row in rows})
 
 
 def repair(settings,pg,job):
@@ -304,8 +309,9 @@ def deliver_local_alert(pg, logger):
 
 def cleanup_exports(settings, pg):
     rows=pg.execute(
-        """SELECT job_id,artifact_ref FROM analytics_export_job
-           WHERE artifact_ref IS NOT NULL AND expires_at<=now() LIMIT 100""",
+        """SELECT e.job_id,e.artifact_ref FROM analytics_export_job e
+           JOIN analytics_report_snapshot s USING(snapshot_id)
+           WHERE e.artifact_ref IS NOT NULL AND (e.expires_at<=now() OR s.status='expired') LIMIT 100""",
     ).fetchall()
     for row in rows:
         ref=row["artifact_ref"]
@@ -335,11 +341,22 @@ def main():
         db=mongo.get_database(settings.mongo_database,write_concern=WriteConcern("majority"))
         next_build=monotonic()+5
         next_quality=monotonic()
+        next_expiry=monotonic()
+        relay=SnapshotRelay(settings.kafka_bootstrap_servers)
         last_day=None
         while True:
-            active=run_pg(settings,pg,redis,"repair",logger)
+            active=run_erasure(settings,pg,logger)
+            active=run_pg(settings,pg,redis,"repair",logger) or active
             active=run_pg(settings,pg,redis,"export",logger) or active
             active=drain_corpus(settings,pg,db,logger,ticket_valid) or active
+            active=relay.send_next(pg,logger) or active
+            if monotonic()>=next_expiry:
+                try:
+                    count=expire_corpus(db,logger)
+                    next_expiry=monotonic()+(2 if count==100 else 60)
+                except Exception as error:
+                    logger.warning("corpus.expiryFailed",extra={"errorType":type(error).__name__})
+                    next_expiry=monotonic()+60
             deliver_local_alert(pg,logger)
             cleanup_exports(settings,pg)
             if monotonic()>=next_quality:

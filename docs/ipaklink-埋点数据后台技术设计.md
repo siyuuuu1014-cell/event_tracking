@@ -166,7 +166,7 @@ PG 常规事务使用 Read Committed，使用唯一键和条件更新保障并�
 |后台 Web|React 登录页提交公司内部账号和密码，同源 HTTPS 下使用 HttpOnly、Secure、SameSite=Strict 的会话 Cookie|FastAPI 使用 Argon2id 校验 PostgreSQL 密码哈希，Redis 存有期限的会话和登录限流计数。每次保护请求检查账号状态及授权。后台状态变更校验请求来源。|
 |后台内部服务|工作负载身份与 TLS，Kafka SASL/TLS 和 Topic ACL，服务间按已有生产规范认证|Collector 只有输入写权限，数仓读输入及写安全 DLQ，查询服务只读已发布数据。数据库角色按分工配置。|
 
-账号由维护人员用交互命令创建，首位平台管理员与账号在同一事务内初始化。停用账号须终止其会话。`analytics_admin_account.account_id` 映射 `analytics_access_grant.principal_id`，授权以角色权限与行级 regionId、datasetCode、ticketId 范围为交集。工单校验还要绑定操作、有效期与目标对象。UI 菜单只负责展现，API 对每次读写重新鉴权。发布、回滚、授权、撤销、敏感读取和语料操作记录安全审计。403 只返回稳定错误码。后台登录密码、密码哈希和会话令牌不写入 `.log`。React 和 API 通过同一站点提供服务。
+账号由维护人员用交互命令创建，首位平台管理员与账号在同一事务内初始化。停用账号须终止其会话。`analytics_admin_account.account_id` 映射 `analytics_access_grant.principal_id`，授权以角色权限与行级 regionId、datasetCode、ticketId 范围为交集。普通员工（`analyst`）按地区查询和导出报表，按数据集读取语料汇总与作业状态。平台管理员（`platformAdmin`）负责权限和治理。工单校验须满足相应操作的有效授权要求。UI 菜单只负责展现，API 对每次读写重新鉴权。发布、回滚、授权、撤销、敏感读取和语料操作记录安全审计。403 只返回稳定错误码。后台登录密码、密码哈希和会话令牌不写入 `.log`。React 和 API 通过同一站点提供服务。
 
 ### 6.2 数据与文件保护
 

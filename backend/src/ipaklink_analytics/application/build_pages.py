@@ -1,5 +1,6 @@
 import argparse
 import json
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
@@ -12,16 +13,18 @@ from ipaklink_analytics.application.activity_facts import (
 from ipaklink_analytics.application.business_facts import CHAT_DATASET, FLOW_DATASET, INQUIRY_DATASET, build_business
 from ipaklink_analytics.application.card_reports import CARD_DATASET, CARD_INSERT
 from ipaklink_analytics.application.ingest import BUSINESS_TIMEZONE
+from ipaklink_analytics.application.quality_facts import QUALITY_DATASET, RECONCILIATION_DATASET, build_quality
 from ipaklink_analytics.application.search_facts import SEARCH_DATASET, SEARCH_INSERT
 from ipaklink_analytics.application.warehouse_metrics import DAILY_INSERT, METRIC_DATASET
 from ipaklink_analytics.config import Settings
+from ipaklink_analytics.infrastructure.snapshot_outbox import INSERT as NOTICE_INSERT, publication
 from ipaklink_analytics.infrastructure.logging import get_logger
 from ipaklink_analytics.infrastructure.report_store import DATASET, clickhouse_client
 
 BUILDER_LOCK = 345972152
 PUBLISH_LOCK = 345972153
 BUILT_DATASETS = (DATASET, CARD_DATASET, SEARCH_DATASET, TRANSLATE_DATASET, ACTIVITY_DATASET, RETENTION_DATASET, METRIC_DATASET,
-                  CHAT_DATASET, FLOW_DATASET, INQUIRY_DATASET)
+                  CHAT_DATASET, FLOW_DATASET, INQUIRY_DATASET, QUALITY_DATASET, RECONCILIATION_DATASET)
 
 PAGE_INSERT = """
 INSERT INTO fact_page_visit
@@ -83,14 +86,16 @@ SETTINGS max_execution_time=60
 """
 
 
-def build(settings: Settings, start: date, end: date) -> str | None:
+def build(settings: Settings, start: date, end: date, *, connection=None, notify=True) -> str | None:
     days = (end - start).days
     if not 0 < days <= 31:
         raise ValueError("Page build date range must cover 1–31 days")
     dates = [start + timedelta(days=i) for i in range(days)]
     # The dedicated session lock keeps builders serialized without a PG transaction during CH work.
-    with psycopg.connect(settings.postgres_dsn.get_secret_value(), autocommit=True) as pg:
-        if not pg.execute("SELECT pg_try_advisory_lock(%s)", (BUILDER_LOCK,)).fetchone()[0]:
+    session = (psycopg.connect(settings.postgres_dsn.get_secret_value(),autocommit=True)
+               if connection is None else nullcontext(connection))
+    with session as pg:
+        if connection is None and not pg.execute("SELECT pg_try_advisory_lock(%s)", (BUILDER_LOCK,)).fetchone()[0]:
             return None
         generation = pg.execute("SELECT nextval('analytics_report_generation')").fetchone()[0]
         now = datetime.now(UTC)
@@ -119,11 +124,11 @@ def build(settings: Settings, start: date, end: date) -> str | None:
                      for day in (retention_days if dataset == RETENTION_DATASET else dates)],
                 )
             try:
+                parameters = {
+                    "watermark": watermark, "generation": generation,
+                    "fromDate": start, "toDate": end, "watermarks": caps,
+                }
                 if caps:
-                    parameters = {
-                        "watermark": watermark, "generation": generation,
-                        "fromDate": start, "toDate": end, "watermarks": caps,
-                    }
                     ch.command(PAGE_INSERT, parameters=parameters)
                     ch.command(CARD_INSERT, parameters=parameters)
                     ch.command(SEARCH_INSERT, parameters=parameters)
@@ -178,7 +183,8 @@ def build(settings: Settings, start: date, end: date) -> str | None:
                     ).first_row[0]
                     if distinct:
                         raise RuntimeError(f"{table} generated duplicate business facts")
-                publish(pg, snapshot, generation, watermark)
+                build_quality(pg,ch,parameters)
+                publish(pg, snapshot, generation, watermark,notify=notify)
             except Exception:
                 pg.execute(
                     "UPDATE analytics_report_build SET status='failed' WHERE dataset=ANY(%s) AND generation=%s",
@@ -188,7 +194,7 @@ def build(settings: Settings, start: date, end: date) -> str | None:
     return snapshot
 
 
-def publish(pg, snapshot, generation, watermark):
+def publish(pg, snapshot, generation, watermark, *, notify=True):
     with pg.transaction():
         pg.execute("SELECT pg_advisory_xact_lock(%s)", (PUBLISH_LOCK,))
         pg.execute(
@@ -223,7 +229,12 @@ def publish(pg, snapshot, generation, watermark):
                WHERE dataset=ANY(%s) AND generation=%s""",
             (snapshot, list(BUILT_DATASETS), generation),
         )
-        pg.execute("UPDATE analytics_report_snapshot SET status='published' WHERE snapshot_id=%s", (snapshot,))
+        generated = pg.execute(
+            "UPDATE analytics_report_snapshot SET status='published' WHERE snapshot_id=%s RETURNING generated_at",
+            (snapshot,),
+        ).fetchone()[0]
+        if notify:
+            pg.execute(NOTICE_INSERT,publication(snapshot,generated,watermark))
 
 
 def main() -> None:

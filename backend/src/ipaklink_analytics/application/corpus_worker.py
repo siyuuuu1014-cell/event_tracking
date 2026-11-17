@@ -49,21 +49,47 @@ def erase_items(db,session,dataset,spec,job):
     if len(items)>1000:
         raise CorpusProblem("scopeTooLarge")
     for item in items:
-        db.corpus_items.update_one({"_id":item["_id"]},{
-            "$set":{"reviewStatus":"removed","tombstoneAt":now,"initialStatus":item.get("initialStatus",item["reviewStatus"])},
-            "$unset":{"text":"","fileRef":""},"$inc":{"revision":1},
-            "$push":{"reviewHistory":{"at":now,"status":"removed","reason":"sourceErased",
-                                      "ticket":spec["ticketId"],"operator":job["operatorId"]}},
-        },session=session)
-        event_id=uuid4()
-        db.analytics_mongo_outbox.insert_one({
-            "_id":event_id,"topic":"analytics.corpus.status","aggregateRef":str(item["_id"]),
-            "payloadSafe":{"eventId":str(event_id),"eventName":"corpus_asset_status_changed","schemaVersion":1,
-                           "datasetCode":dataset["datasetCode"],"status":"removed","reasonCode":"sourceErased",
-                           "languagePair":item["sourceLang"]+":"+item["targetLang"]},
-            "status":"pending","attempts":0,"createdAt":now,"availableAt":now,
-        },session=session)
+        remove_item(db,session,dataset["datasetCode"],item,now,"sourceErased",
+                    spec["ticketId"],job["operatorId"])
     return len(items),len(items),0
+
+
+def remove_item(db,session,code,item,now,reason,ticket,operator):
+    db.corpus_items.update_one({"_id":item["_id"]},{
+        "$set":{"reviewStatus":"removed","tombstoneAt":now,"initialStatus":item.get("initialStatus",item["reviewStatus"])},
+        "$unset":{"text":"","fileRef":""},"$inc":{"revision":1},
+        "$push":{"reviewHistory":{"at":now,"status":"removed","reason":reason,
+                                  "ticket":ticket,"operator":operator}},
+    },session=session)
+    event_id=uuid4()
+    db.analytics_mongo_outbox.insert_one({
+        "_id":event_id,"topic":"analytics.corpus.status","aggregateRef":str(item["_id"]),
+        "payloadSafe":{"eventId":str(event_id),"eventName":"corpus_asset_status_changed","schemaVersion":1,
+                       "datasetCode":code,"status":"removed","reasonCode":reason,
+                       "languagePair":item["sourceLang"]+":"+item["targetLang"]},
+        "status":"pending","attempts":0,"createdAt":now,"availableAt":now,
+    },session=session)
+
+
+def expire_corpus(db,logger):
+    now=datetime.now(UTC)
+    def expire(session):
+        items=list(db.corpus_items.find(
+            {"expiresAt":{"$lte":now},"reviewStatus":{"$ne":"removed"}},
+            {"datasetId":1,"sourceLang":1,"targetLang":1,"reviewStatus":1,"initialStatus":1},
+            session=session,
+        ).sort("expiresAt",1).limit(100))
+        datasets={row["_id"]:row["datasetCode"] for row in db.corpus_datasets.find(
+            {"_id":{"$in":list({item["datasetId"] for item in items})}},{"datasetCode":1},session=session,
+        )}
+        for item in items:
+            remove_item(db,session,datasets[item["datasetId"]],item,now,"retentionExpired",None,"analytics-jobs")
+        return len(items)
+    with db.client.start_session() as session:
+        count=session.with_transaction(expire)
+    if count:
+        logger.info("corpus.expired",extra={"count":count})
+    return count
 
 
 def sync_reviews(db,session,dataset,spec,job):

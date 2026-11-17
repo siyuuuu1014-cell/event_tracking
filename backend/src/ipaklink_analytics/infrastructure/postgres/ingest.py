@@ -7,6 +7,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from ipaklink_analytics.infrastructure.subject_erasure import SUBJECT_DATA_LOCK, SUPPRESSED
+
 
 @dataclass(frozen=True)
 class Claim:
@@ -42,6 +44,13 @@ class IngestRepository:
         lease = uuid4()
         async with self.pool.connection() as conn:
             async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock_shared(%s)",(SUBJECT_DATA_LOCK,))
+                subjects = [actor_key]
+                properties = payload["properties"]
+                if payload["eventName"] == "search_result_open" and properties.get("targetType") == "user":
+                    subjects.append(properties["targetId"])
+                if await (await conn.execute(SUPPRESSED,(subjects,))).fetchone():
+                    return Claim("suppressed")
                 async with conn.cursor(row_factory=dict_row) as cur:
                     if first_report_allowed:
                         await cur.execute(

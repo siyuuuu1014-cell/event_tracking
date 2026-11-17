@@ -154,6 +154,8 @@ class IngestService:
                         return result("duplicate")
                     if claim.status == "conflict":
                         return result("rejected", "eventIdConflict")
+                    if claim.status == "suppressed":
+                        return result("rejected", "invalidEvent")
                     if claim.status == "outOfRange":
                         return result("rejected", "timeOutOfRange")
                     if claim.status == "busy":

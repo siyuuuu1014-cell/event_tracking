@@ -14,7 +14,7 @@ from ipaklink_analytics.api.collection import RequestProblem, reply
 from ipaklink_analytics.api.config_admin import audit, require_ticket
 from ipaklink_analytics.api.reporting import Page, Size, require
 from ipaklink_analytics.application.ingest import BUSINESS_TIMEZONE
-from ipaklink_analytics.infrastructure.admin_access import AUDIT_READ, GRANT_READ, GRANT_WRITE, AccessDenied
+from ipaklink_analytics.infrastructure.admin_access import AUDIT_READ, GRANT_READ, GRANT_WRITE, STAFF_ROLE, AccessDenied
 
 router = APIRouter(prefix=PREFIX, tags=["admin-access"])
 Ticket = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")]
@@ -68,6 +68,8 @@ async def grants(
     size: Size = 20,
 ):
     await require(request, GRANT_READ)
+    if roleCode == "operator":
+        roleCode = STAFF_ROLE
     clauses = [("g.principal_id=%s", principalId), ("g.role_code=%s", roleCode), (f"({STATUS})=%s", status)]
     filters, params = [], []
     for clause, value in clauses:
@@ -96,7 +98,10 @@ async def create_grant(
     if not regions and not datasets:
         raise RequestProblem(400, "analytics.invalidRequest")
     expires_at = body.expiresAt.astimezone(UTC) if body.expiresAt else None
-    normalized = body.model_copy(update={"regionIds": regions, "datasetCodes": datasets, "expiresAt": expires_at})
+    role = STAFF_ROLE if body.roleCode == "operator" else body.roleCode
+    normalized = body.model_copy(update={
+        "roleCode": role, "regionIds": regions, "datasetCodes": datasets, "expiresAt": expires_at,
+    })
     digest = sha256(normalized.model_dump_json().encode()).hexdigest()
     async with request.app.state.pg.connection() as pg, pg.cursor(row_factory=dict_row) as cursor:
         await pg.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (f"grant:{actor.principal_id}:{key}",))
@@ -108,17 +113,21 @@ async def create_grant(
         )
         existing = await cursor.fetchone()
         if existing:
-            if existing.pop("request_hash") != digest:
-                raise RequestProblem(409, "analytics.idempotencyConflict")
+            previous_digest = existing.pop("request_hash")
+            if previous_digest != digest:
+                # Requests made before the merge may have hashed the old role code.
+                legacy = normalized.model_copy(update={"roleCode": "operator"})
+                if role != STAFF_ROLE or previous_digest != sha256(legacy.model_dump_json().encode()).hexdigest():
+                    raise RequestProblem(409, "analytics.idempotencyConflict")
             return encoded(201, {**existing, "status": "active"})
         if expires_at is not None and expires_at <= datetime.now(UTC):
             raise RequestProblem(400, "analytics.invalidRequest")
         await cursor.execute(
-            "SELECT role_code FROM analytics_role WHERE role_code=%s AND status='active'", (body.roleCode,),
+            "SELECT role_code FROM analytics_role WHERE role_code=%s AND status='active'", (role,),
         )
         if await cursor.fetchone() is None:
             raise RequestProblem(404, "analytics.notFound")
-        if body.roleCode not in {"operator", "analyst"} or body.principalId == actor.principal_id:
+        if role != STAFF_ROLE or body.principalId == actor.principal_id:
             raise AccessDenied
         await cursor.execute(
             "SELECT account_id FROM analytics_admin_account WHERE account_id=%s AND status='active' FOR SHARE",
@@ -131,7 +140,7 @@ async def create_grant(
         await cursor.execute(
             """INSERT INTO analytics_access_grant(grant_id,principal_id,role_code,scope,ticket_id,expires_at)
                VALUES(%s,%s,%s,%s,%s,%s) RETURNING created_at AS "createdAt" """,
-            (grant_id, body.principalId, body.roleCode, scope, body.ticketId, expires_at),
+            (grant_id, body.principalId, role, scope, body.ticketId, expires_at),
         )
         created = await cursor.fetchone()
         await pg.execute(
@@ -154,7 +163,7 @@ async def revoke_grant(request: Request, grantId: UUID, body: Revocation):
         )).fetchone()
         if record is None:
             raise RequestProblem(404, "analytics.notFound")
-        if record[0] not in {"operator", "analyst"}:
+        if record[0] != STAFF_ROLE:
             raise AccessDenied
         revoked_at = record[1]
         if revoked_at is None:

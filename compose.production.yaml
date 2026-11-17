@@ -1,0 +1,68 @@
+name: event-tracking-production
+
+x-warehouse-environment: &warehouse-environment
+  ANALYTICS_POSTGRES_DSN: postgresql://analytics:${ANALYTICS_POSTGRES_PASSWORD:?Set the PostgreSQL password}@postgres:5432/analytics
+  ANALYTICS_CLICKHOUSE_PASSWORD: ${ANALYTICS_CLICKHOUSE_PASSWORD:?Set the ClickHouse password}
+
+x-object-environment: &object-environment
+  ANALYTICS_EXPORT_S3_ACCESS_KEY: ${ANALYTICS_MINIO_USER:?Set the MinIO user}
+  ANALYTICS_EXPORT_S3_SECRET_KEY: ${ANALYTICS_MINIO_PASSWORD:?Set the MinIO password}
+
+services:
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${ANALYTICS_POSTGRES_PASSWORD:?Set the PostgreSQL password}
+
+  clickhouse:
+    ports: !reset []
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_PASSWORD: ${ANALYTICS_CLICKHOUSE_PASSWORD:?Set the ClickHouse password}
+    healthcheck:
+      test: ["CMD-SHELL", 'clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" --query "SELECT 1 FROM analytics.events_raw LIMIT 1"']
+
+  mongo:
+    ports: !reset []
+    restart: unless-stopped
+
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+
+  kafka:
+    ports: !reset []
+    restart: unless-stopped
+
+  object-storage:
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${ANALYTICS_MINIO_USER:?Set the MinIO user}
+      MINIO_ROOT_PASSWORD: ${ANALYTICS_MINIO_PASSWORD:?Set the MinIO password}
+
+  object-storage-init:
+    environment: *object-environment
+
+  migrate:
+    environment: *warehouse-environment
+
+  api:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:${ANALYTICS_API_PORT:-58000}:8000"]
+    environment:
+      <<: [*warehouse-environment, *object-environment]
+      ANALYTICS_ENVIRONMENT: production
+      ANALYTICS_ADMIN_ORIGIN: ${ANALYTICS_ADMIN_ORIGIN:?Set the HTTPS admin origin}
+      FORWARDED_ALLOW_IPS: ${ANALYTICS_PROXY_TRUST:-127.0.0.1}
+
+  jobs:
+    restart: unless-stopped
+    environment:
+      <<: [*warehouse-environment, *object-environment]
+      ANALYTICS_ENVIRONMENT: production
+      ANALYTICS_ADMIN_ORIGIN: ${ANALYTICS_ADMIN_ORIGIN:?Set the HTTPS admin origin}
+
+  consumer:
+    restart: unless-stopped
+    environment: *warehouse-environment

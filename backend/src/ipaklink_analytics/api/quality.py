@@ -9,6 +9,7 @@ from ipaklink_analytics.api.event_reports import ReportRange, load_events, repor
 from ipaklink_analytics.api.jobs import valid_dates
 from ipaklink_analytics.api.reporting import Page, Size, require
 from ipaklink_analytics.application.ingest import BUSINESS_TIMEZONE
+from ipaklink_analytics.application.quality_facts import RECONCILIATION_DATASET, read_reconciliation
 from ipaklink_analytics.infrastructure.admin_access import AccessDenied, QUALITY_READ
 from ipaklink_analytics.infrastructure.quality_telemetry import FIELDS
 from ipaklink_analytics.infrastructure.report_store import WarehouseQueryError
@@ -121,6 +122,11 @@ async def quality(request: Request,response: Response,query: Annotated[ReportRan
                    "warehouseCount":warehouse_daily[day],"delta":warehouse_daily[day]-source_daily[day],
                    "unattributedCount":None}
                   for day in sorted(source_daily.keys()|warehouse_daily.keys())] if source!="server" else []
+    if snapshot and source!="server" and query.platform is None and query.version is None:
+        store=request.app.state.reports
+        _,pairs=await store.snapshot(snapshot["snapshot_id"],(query.start,query.end),dataset=RECONCILIATION_DATASET)
+        if len(pairs)==(query.end-query.start).days:
+            reconciled=await store.cached_query(snapshot,read_reconciliation,sorted(pairs))
     totals = tuple(sum(row[i] for row in counters.values()) for i in range(len(FIELDS)))
     end = datetime.combine(query.end,datetime.min.time(),BUSINESS_TIMEZONE)
     result = {**summarize(receipts,events,totals,lags[max(lags)] if lags else None,

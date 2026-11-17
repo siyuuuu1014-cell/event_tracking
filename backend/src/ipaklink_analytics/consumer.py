@@ -19,6 +19,7 @@ from ipaklink_analytics.domain.ingest import Event
 from ipaklink_analytics.infrastructure.identity import IdentityService
 from ipaklink_analytics.infrastructure.logging import get_logger
 from ipaklink_analytics.infrastructure.quality_telemetry import record_dlq
+from ipaklink_analytics.infrastructure.subject_erasure import persist_events
 
 INPUT = "analytics.event"
 DLQ = "analytics.event.dlq.v1"
@@ -178,15 +179,17 @@ def main() -> None:
                     except (Error,PoolTimeout) as error:
                         logger.warning("quality.dlqUnavailable",extra={"errorType":type(error).__name__})
                 offsets[(message.topic(), message.partition())] = message.offset() + 1
+            persisted = 0
             if rows:
-                warehouse.insert("events_raw", rows, column_names=COLUMNS)
+                with quality_pool.connection() as pg:
+                    persisted = persist_events(pg,warehouse,rows,COLUMNS)
             committed = consumer.commit(
                 offsets=[TopicPartition(topic, part, offset) for (topic, part), offset in offsets.items()],
                 asynchronous=False,
             )
             if any(partition.error for partition in committed):
                 raise RuntimeError("Offset commit failed")
-            logger.info("warehouse.batchPersisted", extra={"count": len(rows)})
+            logger.info("warehouse.batchPersisted", extra={"count": persisted})
     except Exception as error:
         logger.error("warehouse.failed", extra={"errorType": type(error).__name__})
         raise

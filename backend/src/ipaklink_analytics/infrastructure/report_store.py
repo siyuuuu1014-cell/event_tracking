@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from ipaklink_analytics.config import Settings
+from ipaklink_analytics.infrastructure.subject_erasure import UNFINISHED
 
 DATASET = "pageVisits"
 
@@ -26,12 +27,12 @@ class WarehouseQueryError(Exception):
     pass
 
 
-def clickhouse_client(settings: Settings):
+def clickhouse_client(settings: Settings, *, read_timeout: int = 10):
     return clickhouse_connect.get_client(
         host=settings.clickhouse_host, port=settings.clickhouse_port,
         database=settings.clickhouse_database, username=settings.clickhouse_user,
         password=settings.clickhouse_password.get_secret_value(),
-        connect_timeout=settings.health_timeout_seconds, send_receive_timeout=10,
+        connect_timeout=settings.health_timeout_seconds, send_receive_timeout=read_timeout,
         query_retries=0,
     )
 
@@ -52,6 +53,8 @@ class ReportStore:
         async with self.pool.connection() as connection:
             async with connection.transaction():
                 await connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                if (await (await connection.execute(UNFINISHED)).fetchone())[0]:
+                    raise WarehouseQueryError
                 async with connection.cursor(row_factory=dict_row) as cursor:
                     await cursor.execute(
                         f"""SELECT snapshot_id,metric_version,generated_at,source_watermark,

@@ -15,6 +15,8 @@ from ipaklink_analytics.api.collection import RequestProblem
 from ipaklink_analytics.api.reporting import Page, Size, require
 from ipaklink_analytics.application.build_pages import PUBLISH_LOCK
 from ipaklink_analytics.domain.ingest import AppVersion, WireModel
+from ipaklink_analytics.infrastructure.snapshot_outbox import INSERT as NOTICE_INSERT, publication
+from ipaklink_analytics.infrastructure.subject_erasure import UNFINISHED
 from ipaklink_analytics.infrastructure.admin_access import AccessDenied, QUALITY_READ, SCHEMA_READ, SCHEMA_WRITE, SNAPSHOT_WRITE
 
 router = APIRouter(prefix="/ipaklink/v1/internal/analytics", tags=["analytics-configuration"])
@@ -386,17 +388,17 @@ async def switch_snapshot(request: Request, body: SnapshotSwitch):
         )).fetchone())
         if total == 0 or total != valid:
             raise RequestProblem(409, "analytics.versionConflict")
-        # Shutdown switch until subject deletion is reflected in snapshot invalidation.
-        if (await (await pg.execute("SELECT 1 FROM analytics_subject_erasure LIMIT 1")).fetchone()) is not None:
+        if (await (await pg.execute(UNFINISHED)).fetchone())[0]:
             raise RequestProblem(409, "analytics.versionConflict")
         updated = (await (await pg.execute(
             "UPDATE analytics_report_snapshot SET status='archived',expires_at=now()+interval '7 days' "
             "WHERE snapshot_id=%s RETURNING now()", (current[0],)
         )).fetchone())[0]
-        await pg.execute(
-            "UPDATE analytics_report_snapshot SET status='published',expires_at=NULL WHERE snapshot_id=%s",
-            (body.snapshotId,),
-        )
+        version,generated,watermark = (await (await pg.execute(
+            """UPDATE analytics_report_snapshot SET status='published',expires_at=NULL WHERE snapshot_id=%s
+               RETURNING metric_version,generated_at,source_watermark""", (body.snapshotId,),
+        )).fetchone())
+        await pg.execute(NOTICE_INSERT,publication(body.snapshotId,generated,watermark,version))
         await audit(pg, request, actor, "snapshotRollback",
                     {"snapshotId":body.snapshotId,"previousSnapshotId":current[0],"reasonCode":body.reasonCode},body.ticketId)
     return ok({"snapshotId":body.snapshotId,"previousSnapshotId":current[0],"status":"published","updatedAt":updated})

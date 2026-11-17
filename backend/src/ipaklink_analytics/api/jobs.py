@@ -222,8 +222,12 @@ async def create_export(request: Request,body: Export,key: Key):
 async def readable_export(request,job_id):
     actor = await require(request,EXPORT_READ)
     async with request.app.state.pg.connection() as pg, pg.cursor(row_factory=dict_row) as cursor:
-        await cursor.execute("SELECT * FROM analytics_export_job WHERE job_id=%s AND requester_id=%s",
-                             (job_id,actor.principal_id))
+        await cursor.execute(
+            """SELECT e.*, s.status='expired' AS snapshot_invalidated,
+                      EXISTS (SELECT 1 FROM analytics_subject_erasure WHERE status<>'succeeded') AS erasure_pending
+               FROM analytics_export_job e JOIN analytics_report_snapshot s USING(snapshot_id)
+               WHERE e.job_id=%s AND e.requester_id=%s""",(job_id,actor.principal_id),
+        )
         job = await cursor.fetchone()
     if not job:
         raise RequestProblem(404,"analytics.notFound")
@@ -233,8 +237,11 @@ async def readable_export(request,job_id):
         raise AccessDenied
     if spec["reportCode"]=="quality" and QUALITY_READ not in actor.permissions:
         raise AccessDenied
-    if job["status"]=="succeeded" and job["expires_at"]<=datetime.now(UTC):
-        raise RequestProblem(410,"analytics.exportExpired")
+    if job["status"]=="succeeded":
+        if job["snapshot_invalidated"] or job["expires_at"]<=datetime.now(UTC):
+            raise RequestProblem(410,"analytics.exportExpired")
+        if job["erasure_pending"]:
+            raise RequestProblem(503,"analytics.temporarilyUnavailable")
     return job
 
 

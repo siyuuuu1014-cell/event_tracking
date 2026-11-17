@@ -242,11 +242,11 @@ CREATE INDEX idx_snapshot_build_reverse
 
 **阶段与功能** 本期新增角色字典；GOV-01、ADM-03。
 
-主键 role_code。初期按部署配置初始化运营、分析及值班角色。
+主键 role_code。有效角色为 `platformAdmin`（平台管理员）和 `analyst`（普通员工）。迁移 `010_merge_staff_roles.sql` 将原 `operator` 授权的角色代码改为 `analyst`，并停用原角色记录。
 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
-|`role_code`|`varchar(40)`|40|是|—|是|是|—|角色代码|
+|`role_code`|`varchar(40)`|40|是|—|是|是|—|platformAdmin 或 analyst；旧 operator 记录为停用状态|
 |`name`|`varchar(80)`|80|—|—|—|是|—|显示名称|
 |`status`|`varchar(16)`|16|—|—|—|是|`active`|active、disabled|
 
@@ -254,14 +254,14 @@ CREATE INDEX idx_snapshot_build_reverse
 
 **阶段与功能** 本期；GOV-01；BI-10、ADM-03 复用。
 
-内部账号与角色的多对多关联表。角色和账号均为物理 FK。增量迁移立即约束新授权。历史开发授权可保留，账号映射处理后可验证全部历史数据。索引(principal_id,role_code) 和 role_code；允许按不同范围或工单分别授予。
+内部账号与角色的多对多关联表。角色和账号均为物理 FK。增量迁移立即约束新授权。历史开发授权可保留，账号映射处理后可验证全部历史数据。索引(principal_id,role_code) 和 role_code；允许按不同范围或工单分别授予。角色合并只更新 role_code，原授权 ID、主体、范围、工单、到期时间和撤销状态继续有效。
 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
 |`grant_id`|`uuid`|16|是|—|是|是|—|授权记录 ID|
 |`principal_id`|`varchar(128)`|128|—|→ analytics_admin_account.account_id|—|是|—|内部账号稳定 ID|
 |`role_code`|`varchar(40)`|40|—|FK → analytics_role.role_code|—|是|—|角色代码|
-|`scope`|`jsonb`|—|—|—|—|是|—|允许的数据集、区域或用途|
+|`scope`|`jsonb`|—|—|—|—|是|—|普通员工使用 regionIds 和 datasetCodes。普通角色授权使用 `authorizationKind=role` 标记。内置平台管理员使用 `allRegions=true`|
 |`ticket_id`|`varchar(80)`|80|—|—|—|否|—|工单标识，敏感访问按策略必填|
 |`expires_at`|`timestamptz`|8|—|—|—|否|—|到期时间|
 |`revoked_at`|`timestamptz`|8|—|—|—|否|—|撤销生效时间|
@@ -1188,14 +1188,14 @@ SQLite PK(event_id)，索引(identity_epoch,queue_state,next_retry_ms)。保存�
 
 ### EVT_24 corpus_asset_status_changed
 
-下期启用，本期可登记停用模式。
+语料治理事件由 MongoDB Outbox 投递到 `analytics.corpus.status`。详细消息见接口文档 §4.9.2。
 
 |字段|类型|长度|主键|外键|唯一|非空|默认值|说明|
 |---|---|---|---|---|---|---|---|---|
 |`datasetCode`|string|—|—|—|—|是|—|已注册的数据集代码|
 |`languagePair`|string|—|—|—|—|是|—|源语言:目标语言，使用业务语言字典|
-|`status`|string|—|—|—|—|是|—|pending / approved / rejected / removed|
-|`reasonCode`|string|—|—|—|—|否|—|治理作业注册的固定原因码；禁止审核意见原文|
+|`status`|string|—|—|—|—|是|—|approved / rejected / removed|
+|`reasonCode`|string|—|—|—|—|是|—|治理作业注册的固定原因码；禁止审核意见原文|
 
 
 ### EVT_25 card_impression

@@ -11,6 +11,39 @@
 - 登录态需配置上游签发方、受众和单独的 HS256 验签密钥 `ANALYTICS_APP_JWT_ISSUER`、`ANALYTICS_APP_JWT_AUDIENCE`、`ANALYTICS_APP_JWT_SECRET`。未配置时登录态返回 503，匿名路径可独立联调。卡片曝光和点击支持匿名上报。消费者已支持 K01 的服务端业务事件信封，真实业务侧适配器仍需联调。
 - API 写入结构化 JSON Lines `.log`，请求以 `X-Request-Id` 追踪。
 
+## 事件索引
+
+[26 个事件验收表](docs/ipaklink-埋点事件验收表.md)记录逐项结果。业务来源先使用合成消息验收入仓。
+
+|事件编号|eventName|生产端|入口与 Topic|代码|对应查询或核验|
+|---|---|---|---|---|---|
+|EVT_01|`app_session_start`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_11/15|
+|EVT_02|`app_background`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_16|
+|EVT_03|`screen_view`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_12/16|
+|EVT_04|`screen_exit`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_12/16|
+|EVT_05|`search_submit`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_13/14|
+|EVT_06|`search_result`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_13/14|
+|EVT_07|`search_result_open`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_13/14|
+|EVT_08|`entity_detail_view`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_14|
+|EVT_09|`business_view_recorded`|业务服务|analytics.event|[定义](backend/src/ipaklink_analytics/domain/business_events.py)|DW-06 业务对账|
+|EVT_10|`favorite_changed`|业务服务|analytics.event|[定义](backend/src/ipaklink_analytics/domain/business_events.py)|ANL_13|
+|EVT_11|`contact_supplier_click`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_14|
+|EVT_12|`inquiry_submit`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_14/16|
+|EVT_13|`inquiry_submit_failed`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_16|
+|EVT_14|`inquiry_created`|业务服务|analytics.event|[定义](backend/src/ipaklink_analytics/domain/business_events.py)|ANL_11/14|
+|EVT_15|`chat_session_open`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_13|
+|EVT_16|`message_send_succeeded`|业务服务|analytics.event|[定义](backend/src/ipaklink_analytics/domain/business_events.py)|ANL_13/17|
+|EVT_17|`notification_open`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|采集入仓|
+|EVT_18|`message_translation_toggle`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|采集入仓|
+|EVT_19|`translate_started`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_13|
+|EVT_20|`translate_completed`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_13|
+|EVT_21|`translate_sync_completed`|业务服务|analytics.event|[定义](backend/src/ipaklink_analytics/domain/business_events.py)|ANL_13|
+|EVT_22|`translate_copy`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/003_app_schemas.sql)|ANL_13|
+|EVT_23|`account_registered`|业务服务|analytics.event|[定义](backend/src/ipaklink_analytics/domain/business_events.py)|采集入仓|
+|EVT_24|`corpus_asset_status_changed`|语料后台|analytics.corpus.status|[定义](backend/src/ipaklink_analytics/application/corpus_review.py)|ANL_18/19|
+|EVT_25|`card_impression`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/007_card_schemas.sql)|ANL_23|
+|EVT_26|`card_impression_click`|App|ANL_03 → analytics.event|[定义](backend/src/ipaklink_analytics/infrastructure/schema/postgres/007_card_schemas.sql)|ANL_23|
+
 ## Docker 启动
 
 本地开发配置仅监听回环地址。数据库账号和无认证的中间件设置仅用于本地联调。
@@ -54,12 +87,12 @@ OpenAPI 调试入口为 `http://127.0.0.1:58000/docs`。迁移、Kafka Topic 初
 
 ```powershell
 docker compose exec api python -m ipaklink_analytics.application.admin_accounts create admin.internal "平台管理员" --platform-admin
-docker compose exec api python -m ipaklink_analytics.application.admin_accounts create analyst.internal "分析师"
+docker compose exec api python -m ipaklink_analytics.application.admin_accounts create staff.internal "普通员工"
 docker compose exec api python -m ipaklink_analytics.application.admin_accounts approve-ticket admin.internal OPS-127
-docker compose exec api python -m ipaklink_analytics.application.admin_accounts disable analyst.internal
+docker compose exec api python -m ipaklink_analytics.application.admin_accounts disable staff.internal
 ```
 
-`approve-ticket` 为已核验的内部工单给指定平台管理员发放 1 小时操作权限。新增或撤销分析师、运营授权，以及发布和回切需要匹配工单。平台管理员账号由维护人员初始化。开户命令通过终端提示读取和确认密码。禁用员工账号后，已有会话下一次请求立即失效。
+`approve-ticket` 为已核验的内部工单给指定平台管理员发放 1 小时操作权限。后台使用平台管理员和普通员工两个角色。普通员工沿用接口编码 `analyst`，按授权的地区查报表和导出，按授权的数据集查语料汇总及作业状态。创建员工账号后需另授数据范围。已有运营授权在迁移时合并为普通员工，保留原地区、数据集和有效期。新增或撤销普通员工授权，以及发布和回切需要匹配工单。平台管理员账号由维护人员初始化。开户命令通过终端提示读取和确认密码。禁用员工账号后，已有会话下一次请求立即失效。
 
 按 Swagger 的 `POST /ipaklink/v1/internal/analytics/sessions` 登录，浏览器会自动保存会话 Cookie。使用 `DELETE /ipaklink/v1/internal/analytics/sessions/current` 退出。从仓库根运行 `Get-Content -Raw scripts/smoke-reports.py | docker compose exec -T api python -` 验证采集、报表和员工账号链路。脚本禁用本轮创建的测试账号并保留对应审计。
 
@@ -76,6 +109,24 @@ docker compose exec api python -m ipaklink_analytics.application.admin_accounts 
 使用 `Get-Content -Raw scripts/smoke-architecture.py | docker compose exec -T api python -` 验证翻译任务终态、跨地区 D1 留存、Redis 缓存和质量采样。
 
 使用 `Get-Content -Raw scripts/smoke-business.py | docker compose exec -T api python -` 可通过本地 Kafka 验证已提交询盘、询盘归因、人工回复和收藏分析。脚本使用合成业务事件，真实询盘、聊天与收藏事件由各自的业务后端提供。
+
+### 行为主体清理
+
+在仓库根目录执行以下命令，将已有分析主体的 `actor_key` 加入清理队列。
+
+```powershell
+docker compose exec jobs python -m ipaklink_analytics.application.subject_erasure <actor_key>
+```
+
+命令返回作业 ID。通过 PostgreSQL 的 `analytics_subject_erasure` 查询状态。后台会清理 ClickHouse 行为明细、PostgreSQL 采集回执及旧报表数据，重算当前看板并使旧快照和导出失效。清理期间报表暂不可用。重复执行返回原作业 ID，失败的作业可用同一命令重新排队。
+
+恢复备份后，如旧数据卷中的行为数据早于 PostgreSQL 中的清理记录，请在开放读写前保留这些清理记录，并对已完成的主体使用相同命令加 `--reapply`，等待所有清理作业完成。采集、Kafka 消费和回放继续使用 PostgreSQL 中的抑制记录。
+
+本地业务对账可运行 `Get-Content -Raw scripts/smoke-business-reconciliation.py | docker compose exec -T api python -u -`。脚本按同一业务日和水位比较合成源记录与实际入仓的询盘、消息、浏览事件，演练漏采、多采、重复和迟到。
+
+## 服务器部署
+
+服务器环境使用独立 Compose 覆盖配置和 Nginx 模板。见 [单机部署手册](docs/ipaklink-埋点后台部署手册.md)。
 
 ## React 管理后台
 

@@ -122,7 +122,7 @@ flowchart LR
 
 |编号|功能点|优先级|主责|表 / 集合|接口 / 事件|验收条件|
 |---|---|---|---|---|---|---|
-|GOV-01|角色和数据范围|P0|平台 / 业务|analytics_access_grant|后台全部查询|运营、分析、值班、受控排查、语料角色按数据范围分别授权|
+|GOV-01|角色和数据范围|P0|平台 / 业务|analytics_access_grant|后台全部查询|普通员工按已授权地区查询和导出报表，按已授权数据集查询语料汇总和作业。平台管理员负责配置、授权和治理，受控操作核验工单|
 |GOV-02|受控操作审计|P0|平台|analytics_admin_audit、审计 .log|ANL_16、19、21|记录操作者、工单、范围、结果；审计写入失败时拒绝敏感操作|
 |GOV-03|聊天、翻译与分析隔离|P0|业务 / 平台|messages、translate_records、ClickHouse|ANL_K01、K03|行为库、Topic、日志及死信中找不到正文和凭据|
 |GOV-04|语料汇总与作业状态|P1|业务 / Web|corpus_datasets、corpus_items、语料作业状态|ANL_18、19；corpus_asset_status_changed<br>[EVT_24](./ipaklink-埋点数据后台接口文档.md#492-evt_24-corpus_asset_status_changed)|按数据集、语言对、状态可查，越权返回 403，汇总可追溯到受权作业|
@@ -206,7 +206,7 @@ flowchart LR
 |事件编号 / eventName|所属功能|生产端 / 优先级|专用字段与条件|业务入口 / 分析接口|看板或校验入口|验收条件|
 |---|---|---|---|---|---|---|
 |[EVT_23 / §4.9.1](./ipaklink-埋点数据后台接口文档.md#491-evt_23-account_registered)<br>`account_registered`|BIZ-07|服务端 / P1|`channel`（string，是）|POST /auth/register<br>`analytics.event`（IPK_ANL_K01），仅受信任的内部生产者|仓库验收，暂无专用看板接口|用户首次注册事务提交才入仓；按权威用户键去重，原账号标识不入分析消息|
-|[EVT_24 / §4.9.2](./ipaklink-埋点数据后台接口文档.md#492-evt_24-corpus_asset_status_changed)<br>`corpus_asset_status_changed`|GOV-04|服务端 / P1|`datasetCode`（string，是）、`languagePair`（string，是）、`status`（string，是）、`reasonCode`（string，否）|内部治理作业；IPK_ANL_18、19 为查询接口<br>`analytics.event`（IPK_ANL_K01），仅受信任的内部生产者|IPK_ANL_18（语料汇总）；IPK_ANL_19 查询作业状态|状态真实变更才入仓；按数据集、语言对及状态核验汇总；审查原文不进入事件|
+|[EVT_24 / §4.9.2](./ipaklink-埋点数据后台接口文档.md#492-evt_24-corpus_asset_status_changed)<br>`corpus_asset_status_changed`|GOV-04|服务端 / P1|`datasetCode`（string，是）、`languagePair`（string，是）、`status`（string，是）、`reasonCode`（string，是）|内部治理作业；IPK_ANL_18、19 为查询接口<br>`analytics.corpus.status`（MongoDB Outbox）|IPK_ANL_18（语料汇总）；IPK_ANL_19 查询作业状态|状态真实变更才投递；按数据集、语言对及状态核验汇总；审查原文不进入事件|
 
 ## 5. 数据库设计
 
@@ -224,7 +224,8 @@ PG 类型约定 `uuid` 用于系统/事件 ID，业务时间统一 `timestamptz`
 |analytics_report_build|dataset:text、date_key:date、generation:bigint、source_offsets:jsonb、checksum:text、status:text、built_at:timestamptz|PK(dataset,date_key,generation)；保存构建输入水位和验证记录|
 |analytics_report_snapshot（发布清单落表）|snapshot_id:text、metric_version:int、manifest:jsonb、generated_at:timestamptz、source_watermark:timestamptz、status:text|PK(snapshot_id)，已发布状态最多一条的部分唯一索引；历史允许查询到期前快照|
 |analytics_repair_job|job_id:text、job_type:text、operator_id:text、idempotency_key:text、request_hash:text、scope:jsonb、ticket_id:text、dry_run:boolean、status:text、result:jsonb?、created_at:timestamptz、finished_at:timestamptz?|PK(job_id)，此表固定由同一创建端点写入，UQ(operator_id,idempotency_key)；同键请求比较 request_hash，负载有变化则返回 409；按状态和创建时间检索|
-|analytics_access_grant|grant_id:uuid、principal_id:text、role_code:text、scope:jsonb、ticket_id:text?、expires_at:timestamptz?、revoked_at:timestamptz?|PK(grant_id)，索引(principal_id,role_code)；读取同时验证状态、有效期和数据范围|
+|analytics_role|role_code、name、status|PK(role_code)。有效值为 platformAdmin 和 analyst，operator 为停用历史角色|
+|analytics_access_grant|grant_id:uuid、principal_id:text、role_code:text、scope:jsonb、ticket_id:text?、expires_at:timestamptz?、revoked_at:timestamptz?|PK(grant_id)，索引(principal_id,role_code)。role_code 关联 analytics_role；角色合并保留原授权范围、有效期和撤销状态。读取同时验证状态、有效期和数据范围|
 |analytics_admin_audit|audit_id:uuid、operator_id:text、action:text、ticket_id:text?、scope_safe:jsonb、result_code:text、request_id:text、occurred_at:timestamptz|PK(audit_id)，索引(operator_id,occurred_at)、(request_id)；追加写入，镜像到 .log|
 |analytics_subject_erasure|job_id:uuid、actor_key:text、status:text、requested_at:timestamptz、finished_at:timestamptz?|PK(job_id)，索引(actor_key,status)；回放和备份恢复依此执行抑制与清理|
 

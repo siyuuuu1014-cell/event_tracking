@@ -62,6 +62,8 @@ services:
 
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analytics.corpus.status --partitions 1 --replication-factor 1 --config retention.ms=604800000
 
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analytics.dashboard.updated.v1 --partitions 1 --replication-factor 1 --config retention.ms=86400000
+
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
     environment:
@@ -204,6 +206,8 @@ services:
       ANALYTICS_SIGNING_SECRET: ${ANALYTICS_SIGNING_SECRET:?Set ANALYTICS_SIGNING_SECRET in .env}
     volumes: ["api-logs:/app/logs"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       clickhouse:

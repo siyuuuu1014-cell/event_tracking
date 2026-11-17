@@ -2049,7 +2049,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 
 ```json
 {
-  "roleCode": "operator",
+  "roleCode": "analyst",
   "status": "active",
   "page": 1,
   "size": 20
@@ -2067,7 +2067,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
       {
         "grantId": "3030e190-a030-4bba-9cec-057d5f419f04",
         "principalId": "acct_01",
-        "roleCode": "operator",
+        "roleCode": "analyst",
         "regionIds": [
           1
         ],
@@ -2083,7 +2083,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** status=active/expired/revoked。regionIds 和 datasetCodes 是允许范围，空数组表示该维度未授予具体范围；全域权限由内置角色规则授予。按授权记录 ID 稳定分页。
+**校验与渲染** status=active/expired/revoked。普通员工显示为 `analyst`，平台管理员显示为 `platformAdmin`。筛选 `roleCode=operator` 时兼容返回同一批普通员工授权，返回的 roleCode 仍为 `analyst`。regionIds 和 datasetCodes 是普通员工的允许范围。空数组表示该维度未授予具体范围，全域权限由内置平台管理员授权。按授权记录 ID 稳定分页。
 
 #### 3.6.2 IPK_ANL_36 创建授权
 
@@ -2111,7 +2111,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
   },
   "body": {
     "principalId": "acct_01",
-    "roleCode": "operator",
+    "roleCode": "analyst",
     "regionIds": [
       1
     ],
@@ -2136,7 +2136,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** 平台管理员可为有效账号授予 operator 或 analyst。ticketId 须匹配该管理员的有效工单授权。至少指定一个区域或数据集。expiresAt 可为空或未来 UTC 时间。使用 Idempotency-Key；相同键同内容返回原资源，异内容 409。 授权创建的幂等键与请求摘要与授权一起写入 PostgreSQL 的 analytics_access_grant_request。
+**校验与渲染** 平台管理员可为有效账号授予普通员工角色 `analyst`。旧客户端传 `operator` 时按同一个角色处理，列表查询和保存均使用 `analyst`。ticketId 须匹配该管理员的有效工单授权。至少指定一个区域或数据集。管理员授予自己或通过本接口授予平台管理员角色时返回 403。expiresAt 可为空或未来 UTC 时间。使用 Idempotency-Key；相同键同内容返回原资源，异内容 409。 授权创建的幂等键与请求摘要与授权一起写入 PostgreSQL 的 analytics_access_grant_request。
 
 #### 3.6.3 IPK_ANL_37 撤销授权
 
@@ -2183,7 +2183,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 }
 ```
 
-**校验与渲染** status 只接受 revoked，不能通过改状态恢复；需要恢复时新建授权。重复撤销保持原 revokedAt。仅撤销 operator 或 analyst 授权，权限检查与审计绑定同次操作。
+**校验与渲染** status 只接受 revoked，不能通过改状态恢复；需要恢复时新建授权。重复撤销保持原 revokedAt。仅撤销普通员工授权，权限检查与审计绑定同次操作。
 
 #### 3.6.4 IPK_ANL_38 审计记录
 
@@ -2565,6 +2565,7 @@ PUT   /internal/analytics/corpus/items/{itemId}/review-state             IPK_ANL
 |IPK_ANL_K01 `analytics.event`|Collector 或业务适配器 → 数仓|App 按 sessionId 分区，服务端按 aggregateRef。稳定 eventId，消费持久写入后推进分区连续位点。|
 |IPK_ANL_K02 `inquiries.created`|现有询盘服务 → 事实适配器及原业务消费者|按 inquiryId 定位权威行，写 K01 成功后才推进适配器位点。|
 |IPK_ANL_K03 `analytics.event.dlq.v1`|数仓消费者 → 受控修复|携 sourceTopic、partition、offset（字符串）、errorCode、可用的 eventId。永久失败先写安全死信。|
+|EVT_24 `analytics.corpus.status`|语料审核、移除和到期作业 → MongoDB Outbox → Kafka|消息键为 eventId，datasetCode、languagePair、status 和 reasonCode 位于消息顶层。|
 |DW-01–08、ING-02/04–07、GOV-01–03|内部任务和事务|Redis 限流，PG/MongoDB 权威事实与出站，ClickHouse 去重、构建、校验、对账，PG 快照发布、授权、主体清理和日志。HTTP 读取固定快照和角色范围。|
 |GOV-04/05、ADM-04/05|治理与值班任务|语料审查触发安全事实和撤回传播；质量告警依据规则窗口生成 alertKey、按授权渠道自动投递，ANL_42 查询诊断。|
 

@@ -88,15 +88,21 @@ assert request(grant_url, method="POST", data={**grant_body,"ticketId":"unapprov
 created = request(grant_url, method="POST", data=grant_body, extra=key, token=admin)
 assert created[0] == 201, created
 assert request(grant_url, method="POST", data=grant_body, extra=key, token=admin) == created
+legacy_body = {**grant_body, "roleCode": "operator"}
+assert request(grant_url, method="POST", data=legacy_body, extra=key, token=admin) == created
 assert request(grant_url, method="POST", data={**grant_body,"regionIds":[1]}, extra=key, token=admin)[0] == 409
 grant_id = created[1]["data"]["grantId"]
 code, listing = request(grant_url + "?" + urlencode({"principalId":analyst, "status":"active"}), token=admin)
 assert code == 200 and listing["data"]["total"] == 1 and listing["data"]["list"][0]["grantId"] == grant_id, listing
+assert listing["data"]["list"][0]["roleCode"] == "analyst", listing
+code, legacy_listing = request(grant_url+"?"+urlencode({"principalId":analyst,"roleCode":"operator"}),token=admin)
+assert code == 200 and legacy_listing == listing, legacy_listing
 
 
 assert request("/internal/analytics/pages")[0] == 401
 assert request("/internal/analytics/pages?regionId=1", token=limited)[0] == 403
 assert request("/internal/analytics/event-schemas", token=limited)[0] == 403
+assert request("/internal/analytics/quality", token=limited)[0] == 403
 assert request("/internal/analytics/metadata?snapshotId=nonexistent", token=admin)[0] == 409
 
 now = datetime.now(UTC)

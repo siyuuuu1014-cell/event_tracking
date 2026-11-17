@@ -764,7 +764,7 @@ seq 在连接内递增。重连先查 metadata，断线每 60 秒轮询。前端
 |4.8.3|[EVT_21](#483-evt_21-translate_sync_completed)|翻译|`translate_sync_completed`|服务端|P0|IPK_ANL_K01|
 |4.8.4|[EVT_22](#484-evt_22-translate_copy)|翻译|`translate_copy`|App|P1|IPK_ANL_03 → K01|
 |4.9.1|[EVT_23](#491-evt_23-account_registered)|账号与语料|`account_registered`|服务端|P1|IPK_ANL_K01|
-|4.9.2|[EVT_24](#492-evt_24-corpus_asset_status_changed)|账号与语料|`corpus_asset_status_changed`|服务端|P1|IPK_ANL_K01|
+|4.9.2|[EVT_24](#492-evt_24-corpus_asset_status_changed)|账号与语料|`corpus_asset_status_changed`|语料后台|P1|`analytics.corpus.status`|
 
 ## 4.3 会话与页面
 
@@ -2313,38 +2313,24 @@ seq 在连接内递增。重连先查 metadata，断线每 60 秒轮询。前端
 
 |项目|定义|
 |---|---|
-|功能模块|账号与语料|
-|生产方与优先级|服务端 · P1|
-|页面或服务|语料治理作业 / MongoDB corpus_items|
-|业务接口|内部治理作业；IPK_ANL_18、19 为查询接口|
-|分析接入|`analytics.event`（IPK_ANL_K01），仅受信任的内部生产者|
-|触发条件|语料条目进入实际审核或移除状态，变更成功持久化。|
-|去重与关联|条目 ID + 状态版本；同状态重复写入不产生事件。|
-|统计用途|语料审核与状态覆盖|
+|功能模块|语料治理|
+|生产方|语料审核及移除作业|
+|业务接口|ANL_41 审核，ANL_39 语料作业；ANL_18、19 为查询接口|
+|分析接入|MongoDB Outbox → Kafka `analytics.corpus.status`，消息键为 `eventId`|
+|触发条件|条目实际进入审核或移除状态，且状态变更与 Outbox 同事务提交。|
+|去重与关联|同一审核状态重试复用已完成的变更，后台重投保留同一个 eventId。|
 
-|字段路径|类型|必填|取值与来源|
+|字段|类型|必填|说明|
 |---|---|---|---|
-|`eventName`|string|是|固定 `corpus_asset_status_changed`|
-|`eventId`|UUID|是|由本条业务事实键稳定派生|
-|`schemaVersion`|int|是|本条契约版本固定为 1|
-|`occurredAt`|RFC3339|是|业务事实提交时刻，UTC|
-|`properties`|object|是|仅接受本表列出的专用字段|
-|`receivedAt`|RFC3339|是|首次进入分析链路的 UTC 时间|
-|`businessDate`|date|是|按业务时区规范化的事件日期|
-|`source`|string|是|固定 server|
-|`producer`|string|是|受信任的服务身份，示例 analytics-corpus-adapter|
-|`identityType`|string|是|系统治理事实填 system|
-|`actorKey`|string / null|是|服务端生成的主体假名；无主体的系统事实可填 null|
-|`aggregateRef`|string|是|用于 Kafka 分区的安全引用，示例 corpus_item_ref_demo|
-|`payloadHash`|string|是|规范化语义内容的 SHA-256 十六进制摘要；示例为占位值|
-|`anonKey`|string / null|否|可信匿名主体假名，适用时补充|
-|`sessionId、pageViewId、screenName、sequence`|UUID / UUID / string / int|否|仅有可信链路上下文时补充|
-|`platform、appVersion、appLanguage、regionId`|string / string / string / int|否|有经验证的业务快照时补充|
-|`policyVersion、requestId、ingestBatchId`|int / string / UUID|否|有对应受理元数据时补充；服务端通常省略 ingestBatchId|
-|`properties.datasetCode`|string|是|已注册的数据集代码|
-|`properties.languagePair`|string|是|源语言:目标语言，使用业务语言字典|
-|`properties.status`|string|是|pending / approved / rejected / removed|
-|`properties.reasonCode`|string|否|治理作业注册的固定原因码；禁止审核意见原文|
+|eventName|string|是|corpus_asset_status_changed|
+|eventId|UUID|是|首次状态变更时生成，与 Outbox ID 相同|
+|schemaVersion|int|是|1|
+|occurredAt|RFC3339|是|Outbox 创建时间，UTC|
+|source|string|是|server|
+|datasetCode|string|是|语料数据集代码|
+|languagePair|string|是|如 zh:uz|
+|status|string|是|approved、rejected 或 removed|
+|reasonCode|string|是|如 reviewPassed、sourceErased 或 retentionExpired|
 
 **Kafka 消息 value**
 
@@ -2354,20 +2340,11 @@ seq 在连接内递增。重连先查 metadata，断线每 60 秒轮询。前端
   "eventName": "corpus_asset_status_changed",
   "schemaVersion": 1,
   "occurredAt": "2026-11-13T04:00:00Z",
-  "receivedAt": "2026-11-13T04:00:01Z",
-  "businessDate": "2026-11-13",
   "source": "server",
-  "producer": "analytics-corpus-adapter",
-  "identityType": "system",
-  "actorKey": null,
-  "aggregateRef": "corpus_item_ref_demo",
-  "payloadHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "properties": {
-    "datasetCode": "approved_terms",
-    "languagePair": "zh:uz",
-    "status": "approved",
-    "reasonCode": "reviewPassed"
-  }
+  "datasetCode": "approved_terms",
+  "languagePair": "zh:uz",
+  "status": "approved",
+  "reasonCode": "reviewPassed"
 }
 ```
 
